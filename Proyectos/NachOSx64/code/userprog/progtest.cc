@@ -13,6 +13,9 @@
 #include "console.h"
 #include "addrspace.h"
 #include "synch.h"
+#include "nachostabla.h"
+
+extern NachosOpenFilesTable *nachosFileTable;
 
 //----------------------------------------------------------------------
 // StartProcess
@@ -26,11 +29,24 @@ StartProcess(const char *filename)
     OpenFile *executable = fileSystem->Open(filename);
 
     if (executable == NULL) {
-	printf("Unable to open file %s\n", filename);
-	return;
+	    printf("Unable to open file %s\n", filename);
+        return;
     }
 
-    currentThread->space = new AddrSpace(executable);    
+    if(nachosFileTable == NULL) {
+        nachosFileTable = new NachosOpenFilesTable();
+        nachosFileTable->addThread();
+    }
+
+    return;
+    }
+
+    currentThread->space = new AddrSpace(executable);
+
+    if(nachosFileTable == NULL) {
+        nachosFileTable = new NachosOpenFilesTable();
+        nachosFileTable->addThread();
+    }
 
     delete executable;			// close file
 

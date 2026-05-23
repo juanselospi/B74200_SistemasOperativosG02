@@ -126,6 +126,8 @@ class Thread {
     void SaveUserState();		// save user-level register state
     void RestoreUserState();		// restore user-level register state
 
+    void CloneUserState(Thread *parent, int entryPoint);
+
     AddrSpace *space;			// User code this thread is running.
     Semaphore* joinSemaphore;
 #endif

@@ -64,10 +64,13 @@ Thread::~Thread()
         DeallocBoundedArray((char *) stack, StackSize * sizeof(HostMemoryAddress));
 #ifdef USER_PROGRAM
     delete joinSemaphore;
-    if (space != NULL) {
-        space->refCount--;
-        if (space->refCount <= 0) {
-            delete this->space;
+    if(space != NULL) {
+
+        space->RemoveThread();
+
+        if(space->CanDelete()) {
+            
+            delete space;
         }
     }
 #endif
@@ -320,4 +323,23 @@ Thread::RestoreUserState()
     for (int i = 0; i < NumTotalRegs; i++)
 	machine->WriteRegister(i, userRegisters[i]);
 }
+
+
+// copia registros de usuario guardados
+void
+Thread::CloneUserState(Thread *parent, int entryPoint) {
+
+    static int stackSlots = 1;
+
+    for(int i = 0; i < NumTotalRegs; i++) {
+        
+	    userRegisters[i] = parent->userRegisters[i];
+    }
+
+    userRegisters[PCReg] = entryPoint;
+    userRegisters[NextPCReg] = entryPoint + 4;
+    userRegisters[StackReg] = parent->userRegisters[StackReg] - (512 * stackSlots);
+    stackSlots++;
+}
+
 #endif

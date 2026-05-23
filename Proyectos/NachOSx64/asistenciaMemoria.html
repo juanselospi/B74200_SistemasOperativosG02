@@ -1,0 +1,228 @@
+<HTML>
+   <HEAD>
+      <TITLE> Sistemas Operativos ECCI-UCR </TITLE>
+      <link rel="stylesheet" type="text/css" href="/ci0122/css/ci0122.css" media="screen">
+      <link rel="stylesheet" type="text/css" href="/ci0122/css/encab.css" media="screen">
+   </HEAD>
+
+<BODY>
+
+<DIV class="st02">
+<TABLE WIDTH=100%>
+   <TR>
+      <TD>
+         <H1> Universidad de Costa Rica </H1>
+         <H2> Escuela de Ciencias de la Computación e Informática 
+</H2>
+         <H2> Asistencia para proyecto programado </H2>
+      </TD>
+      <TD>
+         <IMG SRC="/images/ECCI-new-logo-transparent.png" WIDTH=100px>
+      </TD>
+   </TR>
+
+   <TR>
+      <TD> 
+         <A HREF="/ci0122"> ci0122 </A> /
+         <A HREF="/ci0122/Temas/index.html"> Temas </A> /
+         <A HREF="/ci0122/Temas/fileList.php?path=/ci0122/Temas/Semana-08/"> Semana 08 </A>
+      </TD>
+   </TR>
+
+</TABLE>
+</DIV>
+
+<DIV class="st2">
+<H2>Objetivos</H2>
+<UL class="st1">
+    <LI> Establecer el manejo de varios procesos en la memoria de NachOS por medio de paginación </LI>
+    <LI> Modificar el constructor de "AddrSpace" para permitir el uso de mapas de bits (bitmaps) </LI>
+    <LI> Definir las estructuras de datos para que puedan ser actualizadas por hilos concurrentes </LI>
+</UL>
+
+<H2> Procedimiento </H2>
+<OL class="st1">
+   <LI> Trate de definir y utilizar constantes en sus programas </LI>
+   <LI> Encabezado de los programas de usuario </LI>
+   <UL class="st1">
+      <LI> Cámbiese al directorio "userprog" </LI>
+      <LI> Analice el código de la clase "AddrSpace", especialmente su constructor </LI>
+      <LI> Identifique los siguientes puntos (si es necesario agregue mensajes de despliegue): </LI>
+      <UL class="st1">
+         <LI> ¿Cómo es leído el encabezado del programa ejecutable NachOS? </LI>
+         <UL>
+            <LI> ¿De qué tamaño es el encabezado? </LI>
+            <LI> ¿Cuál es el número mágico? </LI>
+            <LI> Puede verificar el número con <B> hexdump </B> </LI>
+            <UL class="st1">
+               <LI> Code </LI>
+<PRE>
+hexdump -n 128 -C ../test/halt
+</PRE>
+            </UL>
+            <LI> Analice la estructura de los segmentos de NachOS y la estructura del encabezado (noff) de los programas ejecutables de MIPS </LI>
+         </UL>
+
+         <LI> ¿Cómo es establecido el tamaño del proceso? </LI>
+         <UL class="st1">
+            <LI> ¿Cuál es el tamaño del segmento de código (T)? </LI>
+            <LI> ¿Cuál es el tamaño del segmento de datos (D)? </LI>
+            <LI> ¿Cuál es el tamaño de la pila (S)? </LI>
+            <LI> ¿Cuál es el tamaño de una página? </LI>
+            <LI> ¿Alguno de estos tamaños puede ser cero? </LI>
+         </UL>
+
+         <LI> ¿Cómo el programa es cargado (del disco) a memoria? </LI>
+            <UL class="st1">
+               <LI> ¿Cómo se realiza la lectura del disco? </LI>
+               <LI> Analice la clase encargada de realizar esta lectura del disco </LI>
+               <UL class="st1">
+                  <LI> ¿Cómo se determina el archivo de donde se realiza la lectura ? </LI>
+                  <LI> ¿Cómo se indica la cantidad de bytes que se quiere leer? </LI>
+                  <LI> ¿Cómo hacer para leer del archivo solo una página (128 bytes)? </LI>
+                  <LI> ¿Cuál es la posición dentro del archivo de lectura? </LI>
+               </UL>
+               <LI> ¿Cómo es colocada en la memoria la información leída del disco? </LI>
+               <UL class="st1">
+                  <LI> ¿Cuál es la posición en la memoria? </LI>
+                  <LI> ¿Cómo se puede cambiar esta dirección? </LI>
+                  <LI> Analice la estrategia que va a seguir para colocar las páginas de 128 bytes leidas del archivo ejecutables en las posiciones de memoria correspondientes (frames) también de 128 bytes </LI>
+                  <LI> Analice cómo va a manejar las páginas que se leen del archivo cuyo tamaño es menor que 128 bytes </LI>
+                  <LI> Analice una estrategia para manejar páginas que pueden tener información de segmentos distintos, por ejemplo de código (T) y datos (D) </LI>
+               </UL>
+            </UL>
+         </UL>
+      </UL>
+   </UL>
+
+   <LI> Estudiar el funcionamiento de la clase "TranslationEntry" </LI>
+   <UL class="st1">
+      <LI> Cada vez que el procesador (MIPS) realiza un acceso a memoria, se emplea un registro especial (pageTable) para realizar la traducción de las direcciones </LI>
+      <UL class="st1">
+         <LI> Como referencia estudiar el código en el archivo "machine/translate.cc" los métodos "Machine::Translate", "Machine::ReadMem" y "Machine::WriteMem" </LI>
+         <LI> También puede revisar la estructura de la máquina MIPS que se construye en "machine/machine.h" </LI>
+         <LI> También heche un vistazo por los métodos "AddrSpace::InitRegisters", "AddrSpace::RestoreState" y "AddrSpace::SaveState" </LI>
+         <LI> Explique como esta estructura (pageTable) es construida y llenada en el constructor de "AddrSpace" </LI>
+         <LI> Por ahora el mapeo se realiza asignando a cada página lógica de un proceso la misma página física, ( 0 -> 0, 1 -> 1, etc.).  Para poder correr varios programas de usuario en la misma memoria física es necesario cambiar esta manera de asignación </LI>
+      </UL>
+   </UL>
+
+   <LI> Estudie los métodos de la clase BitMap: </LI>
+   <UL class="st1">
+      <LI> Investigue cómo crear un mapa de bits que represente la memoria del procesador MIPS que estamos simulando.  Debe conocer el tamaño (ver machine/machine.h) en páginas de esa memoria.  Este mapa de bits indicará si la página está ocupada o libre </LI>
+      <LI> Como esta es una estructura que puede ser compartida por varios hilos, determine la manera en que hará que su uso sea de acceso exclusivo </LI>
+   </UL>
+
+   <LI> Administración de la memoria de NachOS para programas de usuario </LI>
+   <UL class="st1">
+      <LI> Cree una estructura de datos (BitMap) para representar las páginas de la memoria.  Puede colocarla como una variable global en los archivos "system.h" y "system.cc" en el directorio "threads", su declaración debe ser similar a la de la variable "currentThread" </LI>
+      <UL class="st1">
+         <LI> Para crear una variable global, debe agregarla en el archivo "system.h", por ejemplo "MiMapa" de esta manera </LI>
+<PRE>
+#ifdef USER_PROGRAM
+#include "machine.h"
+extern Machine* machine;	// user program memory and registers
+
+extern BitMap * MiMapa;		// Declares a global variable defined elsewhere
+...
+#endif
+</PRE>
+         <LI> Note que la declaración puede colocarse dentro un #ifdef para hacerla condicional </LI>
+         <LI> Además, esta nueva variable debe existir en el archivo "system.cc" </LI>
+<PRE>
+#ifdef USER_PROGRAM		// requires either FILESYS or FILESYS_STUB
+BitMap * MiMapa;		// Variable definition, no extern prepended
+</PRE>
+      </UL>
+      <LI> Inicialice la variable en el método "Initialize"
+      <LI> Haga que NachOS utilice esta estructura para solicitar las páginas de memoria y actualizar la tabla de páginas del proceso.  Por el momento, asegúrese de que el programa obtenga las mismas páginas que antes (0, 1, 2, etc.).  No cambie la manera en que el programa es cargado en la memoria </LI>
+      <LI> Recuerde asignar las páginas de los datos no inicializados y la pila </LI>
+      <LI> Verifique que el programa de usuario "halt" funcione correctamente </LI>
+   </UL>
+
+<LI> Carga del programa en la memoria </LI>
+   <UL class="st1">
+      <LI> Explique la manera en que el programa es cargado a la memoria </LI>
+      <UL class="st1">
+         <LI> Explique qué hace el método ReadAt de la clase OpenFile </LI>
+         <UL class="st1">
+            <LI> Explique la funcionalidad de los parámetros del método ReadAt </LI>
+         </UL>
+         <LI> Indique porqué hay dos llamados a este método </LI>
+      </UL>
+      <LI> Haga un diagrama que muestre la estructura de los programas de NachOS </LI>
+   <UL class="st2">
+      <LI> Estructura de los programas de usuario de NachOS en la arquitectura MIPS, formato NOFF, "in-disk image" </LI>
+      <TABLE BORDER=1>
+         <TR>
+            <TD ALIGN=CENTER> Encabezado <BR> (H) </TD>
+         </TR>
+         <TR>
+            <TD ALIGN=CENTER> Texto <BR> (TX) </TD>
+         </TR>
+         <TR>
+            <TD ALIGN=CENTER> Datos Inicializados <BR> (DI) </TD>
+         </TR>
+      </TABLE>
+      <LI> Estructura del encabezado de un programa de usuario de NachOS </LI>
+
+      <LI> Analice la manera en que el programa puede ser leído por páginas (128 bytes) </LI>
+      <UL class="st1">
+         <LI> Haga que se lea el segmento de texto (código) página por página </LI>
+         <LI> Haga lo mismo que en el paso anterior para el segmento de datos </LI>
+         <LI> Considere el caso en que los segmentos no son múltiplos exactos de una página </LI>
+         <LI> Asegúrese de reservar páginas para datos no inicializados y pila, aunque no debe ser leídos del disco </LI>
+      </UL>
+
+      <LI> Coloque las páginas de código y datos (128 bytes) leídas del archivos la posición de memoria correspondiente </LI>
+      <UL class="st1">
+         <LI> La posición es la indicada por nuestro pequeño administrador de memoria, descrito en el punto 4).  Está dada por la tabla de páginas del proceso </LI>
+      </UL>
+
+      <LI> Verifique que el programa de usuario "halt" funcione correctamente </LI>
+      <LI> ¿Cuáles cosas deben deshacerse cuando el programa finaliza (llama a Exit)? </LI>
+   </UL>
+
+   <LI> Pruebas </LI>
+   <UL class="st1">
+      <LI> Haga que algunas páginas (ejemplo 0,2,4,6,8,10) dentro de su administrador aparezcan como ocupadas antes de cargar cualquier programa en memoria, ésto se puede realizar dentro de constructor de "AddrSpace" </LI>
+      <LI> Verifique el programa "halt" funcione </LI>
+      <LI> Compruebe que el programa "addrspacetest" funcione bien </LI>
+      <LI>  Ejemplo de salida de "addrspacetest", requiere que "Exit" y "Write a la salida estándar estén implantados:
+<PRE>
+[farroyo@cloud userprog]$ ./nachos -x ../test/addrspacetest
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxyz{
+abcdefghijklmnopqrstuvwxyz{abcdefghijklmnopqrstuvwxy
+No threads ready or runnable, and no pending interrupts.
+Assuming the program completed.
+Machine halting!
+
+Ticks: total 31332, idle 0, system 560, user 30772
+Disk I/O: reads 0, writes 0
+Console I/O: reads 0, writes 1
+Paging: faults 0
+Network I/O: packets received 0, sent 0
+
+Cleaning up...
+
+</PRE>
+      </LI>
+      <LI> Libere las páginas del primer punto </LI>
+      <LI> Corra de nuevo el programa "addrspacetest" </LI>
+   </UL>
+</UL>
+<LI> Fin </LI>
+</OL>
+</DIV>
+<HR>
+</BODY>
+</HTML>
+

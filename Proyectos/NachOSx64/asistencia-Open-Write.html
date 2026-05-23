@@ -1,0 +1,303 @@
+<HTML>
+   <HEAD>
+      <TITLE> Sistemas Operativos ECCI-UCR </TITLE>
+      <link rel="stylesheet" type="text/css" href="/ci0122/css/ci0122.css" media="screen">
+      <link rel="stylesheet" type="text/css" href="/ci0122/css/encab.css" media="screen">
+   </HEAD>
+
+<BODY>
+
+<DIV class="st02">
+<TABLE WIDTH=100%>
+   <TR>
+      <TD>
+         <H1> Universidad de Costa Rica </H1>
+         <H2> Escuela de Ciencias de la Computación e Informática 
+</H2>
+         <H2> Asistencia para proyecto programado (Open y Write) </H2>
+      </TD>
+      <TD>
+         <IMG SRC="/images/ECCI-new-logo-transparent.png" WIDTH=100px>
+      </TD>
+   </TR>
+
+   <TR>
+      <TD> 
+         <A HREF="/ci0122"> ci0122 </A> /
+         <A HREF="/ci0122/Temas/index.html"> Temas </A> /
+         <A HREF="/ci0122/Temas/fileList.php?path=/ci0122/Temas/Semana-08/"> Semana 08 </A>
+      </TD>
+   </TR>
+
+</TABLE>
+</DIV>
+
+<DIV class="st10">
+
+<H2>Objetivos</H2>
+<UL class="st1">
+   <LI> Comprender el funcionamiento de los llamados al sistemas de NachOS </LI>
+   <LI> Crear dos "system call" (llamados al sistema) para el proyecto de "userprog" </LI>
+   <LI> Revisar los detalles de los <B>llamados al sistema</B> ("<B>system calls</B>") de NachOS </LI>
+   <LI> Revisar los parámetros de los llamados al sistema </LI>
+</UL>
+
+<H2>Requisitos</H2>
+<UL class="st1">
+   <LI>Debe estar instalado el proyecto NachOS </LI>
+   <LI>Debe estar instalado el compilador gcc y g++ </LI>
+   <LI>Opcionalmente, sería conveniente tener instalado el debugger, gdb </LI>
+</UL>
+
+<H2>Notas</H2>
+<UL class="st1">
+   <LI> Los elementos indicados en esta asistencia son <B>sugeridos</B>, tienen libertad de implantarlos como mejor lo consideren </LI>
+</UL>
+
+<HR>
+<H2> Procedimiento </H2>
+<OL>
+   <LI> Comprender el funcionamiento de los llamados al sistemas en NachOS </LI>
+   <UL class="st1">
+      <LI> Los programas de usuario emplean los llamados al sistema de NachOS simplemente llamando a una función, de la misma manera que se hace en Unix </LI>
+      <UL class="st1">
+         <LI> Estudie el archivo "halt.c" en el directorio "test", este es el archivo fuente de un programa de usuario de NachOS que utiliza un llamado al sistema "Halt"; este programa es compilado (cross-compilado) para generar código MIPS y poderlo correr en el simulador  </LI>
+         <LI> La definición de los llamados de NachOS está en 
+              <A HREF="syscall.h" TARGET="_new"> "syscall.h" </A>, las de Unix están en "/usr/include" </LI>
+         <LI> Note que cada llamado al sistema está definido por una función, por ejemplo Halt, Open, Read, Write, etc. que puede tener parámetros </LI>
+      </UL>
+      <LI> La implantación de estos métodos se hace mediante una rutina de ensamblador de MIPS en la que se carga el registro 2 con el valor del llamado al sistema solicitado y la instrucción del ensamblador "syscall", ver <A HREF="nachos/test/start.s" TARGET="_new"> start.s </A> </LI>
+      <UL class="st1">
+         <LI> Revise la etiqueta "__start", que es donde comienza el programa, note que lo primero que se hace es llamar a la función "main" (jal main), la que se declara en todo programa C o C++, si la función retorna entonces esta rutina llama a "Exit" colocando un cero en el registro 4 </LI>
+         <LI> Revise el comentario "System call stubs" y comprenda el paso de parámetros a los llamados al sistema de NachOS </LI>
+         <LI> Revise la etiqueta "Halt", que es la implantación del llamado al sistema "Halt", note que se coloca en el registro 2 (addiu $2,$0,SC_Halt) y se hace la instrucción "syscall", luego se hace un "jump" a la dirección de retorno almacenada en el registro 31 (j $31) </LI>
+         <LI> Puede revisar los demás llamados al sistema de NachOS (Fork, Exit, Open, etc.) </LI>
+      </UL>
+      <LI> La simulación de las instrucciones del ensamblador de MIPS se hace en los archivos "mipssim.h" y "mipssim.cc" en el directorio "machine", se recomienda revisarlos para comprender el funcionamiento de este simulador </LI>
+      <UL class="st1">
+         <LI> Ponga especial atención a la simulación de la instrucción de ensamblador "syscall" ("OP_SYSCALL" en el método "OneInstruction"), note que se llama a la función "RaiseException" que está declarada en "machine.cc" </LI>
+         <LI> Revise el código de la función "RaiseException", note que se pasa de modo usuario a modo sistema (interrupt->setStatus(SystemMode);) y se llama a "ExceptionHandler" con el tipo de excepción como parámetro </LI>
+      </UL>
+      <LI> Finalmente llegamos a "ExceptionHandler" en el archivo "exception.cc" en el directorio "userprog", lugar donde completamos los llamados al sistema de NachOS </LI>
+   </UL>
+
+   <LI> Completar la interfaz para los llamados al sistema (exception.cc) </LI>
+   <UL class="st1">
+      <LI> Recuerde que los parámetros de los llamados al sistema se intercambian a través de los registros de arquitectura, tal y como se indica en la documentación del método "ExceptionHandler" </LI>
+      <UL class="st1">
+         <LI> Documentación en "ExceptionHandler" </LI>
+<PRE>
+//      For system calls, the following is the calling convention:
+//
+//      system call code -- r2
+//              arg1 -- r4
+//              arg2 -- r5
+//              arg3 -- r6
+//              arg4 -- r7
+//
+//      The result of the system call, if any, must be put back into r2. 
+//
+
+</PRE>
+         <LI> Para poder <B>leer</B> la información de un registro de la arquitectura MIPS, se utiliza el método "ReadRegister" </LI>
+         <UL class="st1">
+            <LI> Por ejemplo </LI>
+<PRE>
+int type = machine->ReadRegister(2);	// Lee el contenido del registro 2
+</PRE>
+         </UL>
+         <LI> Para poder <B>escribir</B> información a un registro de la arquitectura MIPS, se utiliza el método "WriteRegister" </LI>
+         <UL class="st1">
+            <LI> Por ejemplo </LI>
+<PRE>
+int pc = machine->ReadRegister(PCReg);       // Lee el contenido del registro PC
+    machine->WriteRegister(PrevPCReg, pc );  // Escribe el registro PrevPCReg
+</PRE>
+         </UL>
+      </UL>
+      <LI> Recuerde hacer una rutina para modificar los contadores de programa de MIPS y hacer que la simulación de NachOS continúe correctamente </LI>
+      <UL class="st1">
+         <LI> Crear un método para cambiar los contadores, debe estar en "exception.cc" </LI>
+<PRE>
+void returnFromSystemCall() {
+
+        machine->WriteRegister( PrevPCReg, machine->ReadRegister( PCReg ) );		// PrevPC <- PC
+        machine->WriteRegister( PCReg, machine->ReadRegister( NextPCReg );			// PC <- NextPC
+        machine->WriteRegister( NextPCReg, machine->ReadRegister( NextPCReg ) + 4 );	// NextPC <- NextPC + 4
+
+}       // returnFromSystemCall
+</PRE>
+      </UL>
+   </UL>
+<BR>
+<LI> Se sugiere hacer una clase para manejar la tabla de archivos abiertos, como la siguiente, </LI>
+   <UL class="st1">
+      <LI> Ejemplo
+<PRE>
+class NachosOpenFilesTable {
+  public:
+    NachosOpenFilesTable();						// Initialize
+    ~NachosOpenFilesTable();						// De-allocate
+    
+    int Open( int UnixHandle );					// Register the file handle
+    int Close( int NachosHandle );					// Unregister the file handle
+    bool isOpened( int NachosHandle );
+    int getUnixHandle( int NachosHandle );
+    void addThread();							// If a user thread is using this table, add it
+    void delThread();							// If a user thread is using this table, delete it
+
+    void Print();								// Print contents
+    
+  private:
+    int * openFiles;							// A vector with user opened files
+    BitMap * openFilesMap;						// A bitmap to control our vector
+    int usage;									// How many threads are using this table
+
+};
+
+</PRE>
+      <LI> Los métodos <I>"addThread"</I> y <I>"delThread"</I> se utiliza para que todos los hilos de un programa de usuario utilicen la misma tabla, lo que hacemos es que cada vez que se crea un hilo, incrementamos la variable de instancia <I>"usage"</I>, de la misma manera que cuando los hilos vayan terminando, se decrementa; si ya es el último hilo, entonces éste cerraría todos los archivos abiertos indicados por nuestra tabla. La idea es que un hilo no cierre los archivos que pueden emplear otros hilos. </LI>
+      <LI> Pueden crear dos archivos dentro de "userprog" para esta clase: "nachostabla.h" y "nachostabla.cc", los nombres son sugeridos, pueden utilizar los que ustedes quieran </LI>
+      <LI> Si crean los archivos, es necesario cambiar el archivo "Makefile.common" para que los compile cada vez que se genera el NachOS </LI>
+      <UL class="st1">
+         <LI> Archivo "Makefile.common" original, localizado en "nachos/code" </LI>
+<PRE>
+...
+USERPROG_H = ../userprog/addrspace.h\
+	../userprog/bitmap.h\
+	../filesys/filesys.h\
+	../filesys/openfile.h\
+	../machine/console.h\
+	../machine/machine.h\
+	../machine/MIPSsim.h\
+	../machine/translate.h
+
+USERPROG_C = ../userprog/addrspace.cc\
+	../userprog/bitmap.cc\
+	../userprog/exception.cc\
+	../userprog/progtest.cc\
+	../machine/console.cc\
+	../machine/machine.cc\
+	../machine/MIPSsim.cc\
+	../machine/translate.cc
+
+USERPROG_O = addrspace.o bitmap.o exception.o progtest.o console.o machine.o \
+        MIPSsim.o translate.o
+
+...
+</PRE>
+         <LI> En este archivo se definen los elementos a compilar por medio de variables, por ejemplo, para el proyecto "userprog" se utilizan tres variables, una "USERPROG_H", para designar todos los archivos <B>.h</B> necesarios para crear NachOS, otra, "USERPROG_C", para los archivos <B>.cc</B> y la tercera "USERPROG_O" para enlazar los archivos y crear el ejecutable de NachOS </LI>
+
+         <LI> Para agregar claridad en las definiciones, que son de una sola línea, se les agrega el caracter "\", que en Unix representa la continuidad de una línea.  Entonces, lo que estamos haciendo es agregando nuestro archivo "nachostabla" a la línea donde se define la variables, por eso se le agrega "\" al elemento anterior y se agrega una nueva línea con nuestra nueva clase </LI>
+
+         <LI> Archivo "Makefile.common" con los archivos "nachostabla" agregados, preste atención a la última línea de la definición de la variable "USERPROG_H", </LI>
+         <LI> También hay que agregar el ".o" para enlazar el programa ejecutable final </LI>
+         <LI> Archivo "Makefile.common" modificado </LI>
+
+<PRE>
+...
+USERPROG_H = ../userprog/addrspace.h\
+	../userprog/bitmap.h\
+	../filesys/filesys.h\
+	../filesys/openfile.h\
+	../machine/console.h\
+	../machine/machine.h\
+	../machine/MIPSsim.h\
+	../machine/translate.h\
+	../userprog/nachostabla.h
+
+USERPROG_C = ../userprog/addrspace.cc\
+	../userprog/bitmap.cc\
+	../userprog/exception.cc\
+	../userprog/progtest.cc\
+	../machine/console.cc\
+	../machine/machine.cc\
+	../machine/MIPSsim.cc\
+	../machine/translate.cc\
+	../userprog/nachostabla.cc
+
+USERPROG_O = addrspace.o bitmap.o exception.o progtest.o console.o machine.o \
+	MIPSsim.o translate.o nachostabla.o
+
+...
+</PRE>
+         <LI> Deben correr "make depend" en "userprog" para que las nuevas definiciones sean agregadas </LI>
+      </UL>
+   </UL>
+<BR>
+
+      <LI> Métodos sugeridos para Open y Write </LI>
+      <UL class="st1">
+         <LI> 
+<PRE>
+
+void Nachos_Open() {                    // System call 5
+	// Read the name from the user memory, see 5 below
+	// Use NachosOpenFilesTable class to create a relationship
+	// between user file and unix file
+	// Verify for errors
+
+        returnFromSystemCall();		// Update the PC registers
+
+}       // Nachos_Open
+
+/*
+ *  System call interface: OpenFileId Write( char *, int, OpenFileId )
+ */
+void NachOS_Write() {                   // System call 7
+
+        char * buffer = NULL;
+        int size = machine->ReadRegister( 5 );	// Read size to write
+
+        // buffer = Read data from address given by user;
+        OpenFileId descriptor = machine->ReadRegister( 6 );	// Read file descriptor
+
+	// Need a semaphore to synchronize access to console
+	// Console->P();
+	switch ( descriptor ) {
+		case  ConsoleInput:	// User could not write to standard input
+			machine->WriteRegister( 2, -1 );
+			break;
+		case  ConsoleOutput:
+			buffer[ size ] = 0;
+			printf( "%s", buffer );
+		break;
+		case ConsoleError:	// This trick permits to write integers to console
+			printf( "%d\n", machine->ReadRegister( 4 ) );
+			break;
+		default:	// All other opened files
+			// Verify if the file is opened, if not return -1 in r2
+			// Get the unix handle from our table for open files
+			// Do the write to the already opened Unix file
+			// Return the number of chars written to user, via r2
+			break;
+
+	}
+	// Update simulation stats, see details in Statistics class in machine/stats.cc
+	// Console->V();
+
+        returnFromSystemCall();		// Update the PC registers
+
+}       // NachOS_Write
+
+</PRE>
+
+      </UL>
+         <LI> ¿Cómo leer datos de la memoria de usuario?, esto es necesario para obtener la información que quiere escribir el usuario, variable <i>buffer</i> del método NachOS_Write </LI>
+         <UL class="st1">
+            <LI> Utilizar el método "ReadMem" de la clase "Machine", revisar el archivo "translate.cc" en directorio "machine" </LI>
+            <LI> Código </LI>
+<PRE>
+	bool ReadMem(int addr, int size, int* value);
+</PRE>
+            <LI> El parámetro <i> addr </i> se recibe en el llamado al sistema Write, en el registro 4, por ejemplo </LI>
+            <LI> Recuerde que el usuario nos indica cuántos bytes debemos leer de esa dirección, parámetro <i> size </i> del llamado, registro 5 </LI>
+            <LI> El método <I>ReadMem</I> solo puede leer enteros, ver el tercer parámetro, por lo que se recomienda que las tiras de caracteres se lean caracter por caracter (ciclo) e irlas almacenando en una variable local, por ejemplo, char buffer[ 100 ]; </LI>
+
+         </UL>
+   </UL>
+</OL>
+<HR>
+</BODY>
+</HTML>
+
