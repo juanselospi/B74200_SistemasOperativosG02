@@ -1,0 +1,176 @@
+Modalidad: individual
+Objetivos
+Completar el funcionamiento de la memoria virtual de NachOS
+Entender los elementos involucrados en la administración de la memoria virtual de NachOS
+TLB
+SWAP
+Page Table
+Main Memory
+Otros
+Introducción
+La parte de memoria virtual de NachOS se encuentra en el directorio "vm"
+El "Makefile" define los símbolos de compilación "USE_TLB" y "VM"
+Esta definición cambia la manera en que el sistema operativo realiza los accesos a memoria, esta vez utilizando un TLB
+Debe tener claro qué es una falta de página (Page Fault) e identificar cómo esta excepción es generada
+Procedimiento
+Estudiar el método "Translate" e identificar los puntos en que se genera la excepción (Page Fault exception)
+Entender cómo se realiza la traducción de direcciones virtuales o lógicas a direcciones físicas o reales
+Entender porqué es posible que esos dos métodos puedan devolver falso
+Entender el trabajo realizado por el método "Machine::Translate"
+Parámetros de entrada, valor de retorno, posible excepciones
+¿Cómo se realiza la traducción de direcciones virtuales a físicas?
+Entender la funcionalidad de las banderas "dirty" y "use"
+Encontrar los puntos en los que ocurre una falta de página (Page Fault) y generar una solución para cada caso
+De acuerdo con las características de la página faltante, construir una tabla de casos e indicar la estrategia para recuperarla
+Tipo de página que falta: texto (T), datos inicializados (Di), datos no inicializados (Dni), pila
+Si la página está sucio o no, tener claro cuáles páginas no es posible ensuciar
+¿Qué hacer con la página víctima? ¿Dónde colocarla?
+¿De dónde tomar la página que entra?
+¿Cuáles estructuras deben ser actualizadas para que no ocurra de nuevo la excepción? (TLB, PageTable)
+Debe entender la función de un TLB en el procesador MIPS
+Investigar la estructura que representa este buffer en NachOS
+Determinar el tamaño de cada entrada y el tipo de datos representado
+Entender el uso de las variables "pageTable" y "tlb" que son parte de la máquina de simulación
+Detectar los casos en que se produce una falta de página en la que está involucrada la TLB
+Entender cómo se resuelve una falta de página en el procesador
+Entender la funcionalidad de las variables "use" y "dirty"
+Utilización del espacio SWAP para manipular la memoria virtual en NachOS
+Determinar el tamaño del espacio recomendado para el SWAP, regla de 2x y excepciones
+¿Cuáles páginas deben ir al SWAP? ¿Por qué?
+Cambios sugeridos para el constructor de "AddrSpace"
+Ahora debe lograr que todas las páginas en la tabla de páginas de un proceso/hilo estén inválidas y que, por lo tanto, no hayan sido cargadas en la memoria
+...
+#ifdef VM
+       pageTable[ i ].valid = false;	// Invalid while starting a process
+#else
+       pageTable[ i ].valid = true;	// We are loading a process completely to memoria
+#endif
+Tareas que sugerimos completar para realizar este proyecto
+Entender cuáles estructuras conforman un archivo ejecutables de NachOS
+¿Cómo determina cuál es la página faltante? (Revisar la funcionalidad del registro "BadVAddrReg" )
+El control de las páginas físicas debe hacerse enteramente en la clase "AddrSpace"
+Determinar los flujos de las páginas físicas
+¿Cuándo las páginas deben ser leidas del archivo ejecutable?
+¿De cuál lugar deben ser cargadas las páginas de código? ¿Cómo determinar que se trata de una página de código?
+Determinar las características de la página faltante
+Tipo de página: Texto, datos inicializados, datos no inicializados, pila
+De acuerdo con su tipo, encuentre el lugar dónde debe estar la página faltante
+¿Qué pasa si la página está sucia?, ¿Para cuáles tipos cambiaría su origen?
+¿Qué pasa si la página de código comparte el espacio con una página de datos?
+Una página de código nunca puede moverse o estar en el SWAP
+¿Adónde debemos mover una página de datos sucia?
+La primera vez, ¿De cuál lugar deben ser cargadas las páginas de datos inicializados?
+Construir el procedimiento para realizar el reemplazo de páginas en la memoria principal
+Analizar la posibilidad de utilizar una IPT (tabla de páginas invertida)
+Si se requiere un reemplazo, ¿Adónde debemos mover a la víctima?
+¿Cuáles son las estructuras involucradas para completar el reemplazo?
+¿Cómo se actualizan estas estructuras?
+Establecer el procedimiento para realizar reemplazos en la TLB
+No olvidar que la TLB es una memoria cache para la table de páginas
+Implantar un algoritmo de reemplazo en la TLB distinto a FIFO
+SWAP
+¿Cuándo páginas deben ir al SWAP?
+¿Cuáles páginas deben venir del SWAP?
+¿Qué pasa si la página ya estaba en memoria principal?
+Programa de usuario "halt"
+Este programa debe correr sin problemas
+Verificar que se produce tres faltas de página
+0, 1, 9
+Puede comprobar las referencias a memoria generadas utilizando la bandera "-d a" cuando corre el programa de NachOS
+Programa de usuario provisto "sort.lab", compilado del original "sort.c"
+Este programa debe correr sin problemas y producir:
+Page-Faults: 2515 (movimientos de página)
+PageFaultException: 1458113 (interrupciones capturadas, algunas páginas ya estaban en memoria)
+Lecturas del SWAP: 2466 (páginas que fueron sacadas del SWAP, disk reads)
+Escrituras al SWAP: 2472 (páginas que fueron enviadas al SWAP, disk writes)
+Valor de retorno: 1023
+Programa de usuario provisto "sort-ok", compilado del original "sort-ok.c"
+Este programa debe correr sin problemas y producir:
+Page-Faults: 3991 (movimientos de página)
+PageFaultException: 2113069 (interrupciones capturadas, algunas páginas ya estaban en memoria)
+Lecturas del SWAP: 3937 (páginas que fueron sacadas del SWAP)
+Escrituras al SWAP: 3942 (páginas que fueron enviadas al SWAP)
+Programa de usuario provisto "matmult", compilado del original "matmult.c", con arreglos de 20x20 enteros
+Este programa debe correr sin problemas y producir:
+Page-Faults: 83 (movimientos de página)
+PageFaultException: 51843 (interrupciones capturadas, algunas páginas ya estaban en memoria)
+Lecturas del SWAP: 35 (páginas que fueron sacadas del SWAP)
+Escrituras al SWAP: 46 (páginas que fueron enviadas al SWAP)
+Varios programas de usuario juntos, como se muestra
+    $ ./nachos -x ../test/shell
+    --../test/sort
+    --../test/halt
+    Machine halting!
+
+    Ticks: total 18858910, idle 0, system 51360, user 18807550
+    Disk I/O: reads 2467, writes 2474
+    Console I/O: reads 26, writes 2
+    Paging: faults 2528 pages not in memory, 1458137 "PageFaultException"
+    Network I/O: packets received 0, sent 0
+Page-Faults: 2528 (movimientos de página)
+PageFaultException: 1458137 (interrupciones capturadas, algunas páginas ya estaban en memoria)
+Lecturas del SWAP: 2467 (páginas que fueron sacadas del SWAP)
+Escrituras al SWAP: 2474 (páginas que fueron enviadas al SWAP)
+Programa de usuario provisto "sort"
+Cambie la cantidad de páginas físicas de 32 a 4, en "machine.h", asegúrese de que el SWAP tenga al menos 64 páginas disponibles
+Este programa debe correr sin problemas y producir:
+$ ./nachos -x ../test/sort
+No threads ready or runnable, and no pending interrupts.
+Assuming the program completed.
+Machine halting!
+
+Ticks: total 51927107, idle 0, system 32931900, user 18995207
+Disk I/O: reads 860120, writes 860153
+Console I/O: reads 0, writes 0
+Paging: faults 1646593 pages not in memory, 1646593 PageFaultExceptions
+Network I/O: packets received 0, sent 0
+
+Cleaning up...
+Page-Faults: 1646593 (movimientos de página)
+PageFaultException: 1646593 (interrupciones capturadas, algunas páginas ya estaban en memoria)
+Lecturas del SWAP: 860120 (páginas que fueron sacadas del SWAP, disk reads)
+Escrituras al SWAP: 861053 (páginas que fueron enviadas al SWAP, disk writes)
+Máxima posición ocupada en el SWAP: 33
+Valor de retorno: 1023
+Distribución de puntos del proyecto
+Llamados al sistema
+Es necesario que "Exit" funcione correctamente
+Para poder correr "todos" se requiere que otros llamados funcionen correctamente
+Cambios realizados a AddrSpace (15%)
+Cambios al constructor, administración de los marcos de memoria (2%)
+No debe cargar ninguna página del proceso (1%)
+Cambios en "RestoreState" y "SaveState" (4%)
+Método para cargar una página en memoria (5%)
+Control de errores al momento de cargar una página (3%)
+Cambios realizados en excepciones (5%)
+Cambios al manejador de excepciones (2%)
+Determinación de la página faltante (1%)
+Comprobar presencia en tabla de páginas (1%)
+Comprobar presencia en memoria principal (1%)
+Manejo de TLB y tabla de páginas (10%)
+Control de concurrencia para las estructuras de datos
+Algoritmo empleado para el reemplazo: debe ser LRU (registros o stack) para ambas
+Puede utilizar "FIFO" o "Second Chance" temporalmente para comparar resultados
+Actualización de tabla de páginas del procesos, para la página víctima (sugerencia IPT inverted page table) (4%)
+Actualización de tabla de páginas del proceso, para la página entrante (3%)
+Actualización de la TLB (3%)
+Uso de SWAP (10%)
+Creación del archivo de SWAP, control de 2x y excepciones (2%)
+Administración del área de SWAP (3%)
+Escrituras/Lecturas del SWAP (3%)
+Manejo en la tabla de páginas (2%)
+Control de espacio libre en SWAP
+Implantación de LRU (10%)
+Creación de estructuras necesarias para este algoritmo (5%)
+Actualización de las estructuras para encontrar a la víctima (4%)
+Selección de la víctima (1%)
+Corrida de programas (50%)
+El programa "sort" debe correr (8%)
+El programa "matmult" debe correr (7%)
+El programa "shell" debe correr
+El programa de usuario "sort" deben correr dentro del programa de usuario "shell" (10%)
+El programa de usuario "todos" deben correr dentro del programa de usuario "shell" (10%)
+Corridas con 4 marcos de memoria, debe cambiar "NumPhysPages" a 4 en "machine.h", compilar y correr la nueva versión de NachOS
+El programa "sort" deben correr (8%)
+El programa "matmult" debe correr (7%)
+Fin

@@ -1,0 +1,331 @@
+<HTML>
+<HEAD>
+   <TITLE> CI-0122 Sistemas Operativos ECCI-UCR </TITLE>
+   <link rel="stylesheet" type="text/css" href="/ci0122/css/ci0122.css" media="screen">
+   <link rel="stylesheet" type="text/css" href="/ci0122/css/encab.css" media="screen">
+</HEAD>
+<BODY>
+
+<DIV class="st01">
+<TABLE WIDTH=100%>
+   <TR>
+      <TD>
+         <H1> Universidad de Costa Rica </H1>
+         <H2> Escuela de Ciencias de la Computación e Informática 
+</H2>
+         <H2> Asistencia proyectos programados </H2>
+      </TD>
+      <TD>
+         <IMG SRC="/images/ECCI-new-logo-transparent.png" WIDTH=100px>
+      </TD>
+   </TR>
+
+   <TR>
+      <TD> 
+         <A HREF=/ci0122/> ci0122 </A> /
+         <A HREF=/ci0122/Proyectos/> Proyectos </A> /
+         <A HREF=/ci0122/Proyectos/index.php?path=/ci0122/Proyectos/Proyecto-02/> Proyecto-02 </A> /
+      </TD>
+   </TR>
+</TABLE>
+</DIV>
+
+<HR>
+
+<DIV class="st10">
+<H2>Objetivos</H2>
+<UL class="st1">
+   <LI> Crear el "system call" <B> Fork </B> (llamados al sistema) para el proyecto de "userprog" </LI>
+   <LI> Revisar los detalles de los "system calls" de NachOS </LI>
+</UL>
+
+<H2>Requisitos</H2>
+<UL class="st1">
+   <LI> Debe estar instalado el proyecto NachOS </LI>
+   <LI> Debe estar instalado el compilador gcc y g++ </LI>
+   <LI> Para probar este llamado al sistema es necesario que la memoria de NachOS pueda cargar varios programas de usuario a la vez, ver <A HREF="asistenciaMemoria.html"> UserProg Memory </A> </LI>
+   <LI> Es conveniente tener instalado el debugger, gdb </LI>
+</UL>
+
+<H2>Notas</H2>
+<UL class="st1">
+   <LI> Esta asistencia muestra una forma de implantación que no necesariamente se tiene que utilizar para la resolución del proyecto de NachOS </LI>
+</UL>
+
+<HR>
+<H2> Procedimiento </H2>
+<OL class="st1">
+   <LI> Descripción de la funcionalidad del llamado al sistema "Fork" </LI>
+   <UL>
+      <LI> Parámetros recibidos en el llamado al sistema </LI>
+      <UL class="st1">
+         <LI> Primer y único parámetro: dirección de la rutina a ejecutar, se trata de una dirección a la memoria de MIPS </LI>
+         <LI> Ejemplo, ver este programa de usuario </LI>
+<PRE>
+#include "syscall.h"
+
+void hijo(int);
+int id;
+int main(){
+	id = SemCreate(0);
+	Fork(hijo);
+
+	SemWait(id);
+	Write("padre", 5, 1);
+	SemDestroy(id);
+	Exit(0);
+}
+
+
+void hijo(int dummy){
+	Write( "hijo", 5, 1 );
+	SemSignal(id);
+}
+</PRE>
+         <LI> En este ejemplo se pasa la dirección del método "hijo" como parámetro del "Fork" </LI>
+         <LI> Este ejemplo utiliza los llamados al sistema de semáforos y si están bien implantados deberá desplegar "hijo padre" </LI>
+      </UL>
+      <BR>
+      <LI> Funcionamiento esperado </LI>
+      <UL>
+         <LI> Este llamado al sistema debe lograr que un nuevo hilo ejecute la rutina especificada por el usuario, "hijo" en el ejemplo y permita al hilo llamador del método o "papa" continuar corriendo, o sea, el "papa" debe seguir con las instrucciones que están luego del "Fork", "SemWait(id);" en nuestro ejemplo, mientras que el hijo debe ejecutar la rutina "hijo" </LI>
+         <LI> Suponemos que el hijo completa la rutina indicada y finaliza </LI>
+         <LI> No podemos suponer ningún orden de ejecución de los hilos en NachOS </LI>
+         <LI> Los hilos de NachOS deben compartir código y datos, pero no pila </LI>
+
+      </UL>
+   </UL>
+<BR>
+<LI> Estructura de los programas de usuario de NachOS </LI>
+   <UL class="st2">
+      <LI> Estructura de los programas de usuario de NachOS en la arquitectura MIPS en disco ("in-disk image" formato NOFF) 
+<BR>
+<TABLE BORDER=1>
+   <TR>
+      <TD ALIGN=CENTER> Encabezado <BR> (H) </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Texto <BR> (TX) </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Datos Inicializados <BR> (DI) </TD>
+   </TR>
+<BR>
+</TABLE>
+   </LI>
+      <LI> Estructura del encabezado de un programa de usuario de NachOS 
+
+<BR>
+<TABLE BORDER=1 BGCOLOR=ALICEBLUE>
+   <TR>
+      <TD ALIGN=CENTER> Número mágico </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Descriptor de segmento de código </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Descriptor de segmento de datos inicializados </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Descriptor de segmento de datos no inicializados </TD>
+   </TR>
+</TABLE>
+      </LI>
+<BR>
+      <LI> Estructura de un descriptor de segmento
+<TABLE BORDER=1 BGCOLOR=AZURE>
+   <TR>
+      <TD ALIGN=CENTER> Tama&ntilde;o </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Dirección virtual en memoria </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Dirección en archivo </TD>
+   </TR>
+</TABLE>
+      </LI>
+
+<BR>
+      <LI> Estructura detallada del encabezado (bytes) 
+<TABLE BORDER=1 BGCOLOR=BEIGE>
+   <TR>
+      <TD ALIGN=CENTER ROWSPAN=4> Header (40) </TD>
+      <TD COLSPAN=3 ALIGN=CENTER> Magic number (4) </TD>
+   </TR>
+   <TR>
+      <TD> Code Size (4) </TD>
+      <TD> Code Virtual Address (4) </TD>
+      <TD> Code InFile Address (4) </TD>
+   </TR>
+   <TR>
+      <TD> Init Data Size (4) </TD>
+      <TD> Init Data Virtual Address (4) </TD>
+      <TD> Init Data InFile Address (4) </TD>
+   </TR>
+   <TR>
+      <TD> Uninit Data Size (4) </TD>
+      <TD> Uninit Data Virtual Address (4) </TD>
+      <TD> Uninit Data InFile Address (4) </TD>
+   </TR>
+</TABLE>
+       </LI>
+
+   </UL>
+<BR>
+
+<LI> Espacio de memoria virtual para un proceso de NachOS </LI>
+   <UL class="st1">
+      <LI> Todos los hilos de NachOS tienen un espacio de memoria virtual donde se encuentra el código, los datos inicializados, los datos no inicializados y la pila.  Estas secciones están contiguas en la memoria virtual y son inicializadas en el constructor de "AddrSpace" </LI>
+      <LI> Mapa de memoria virtual de un proceso en NachOS
+<TABLE BORDER=1 BGCOLOR=AZURE>
+   <TR>
+      <TD ALIGN=CENTER> Text (Code) </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Init Data </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Uninit Data </TD>
+   </TR>
+   <TR>
+      <TD ALIGN=CENTER> Stack </TD>
+   </TR>
+</TABLE>
+      </LI>
+      <LI> Las secciones de "Text" y "Init Data" son leidas directamente del archivo del programa ejecutable, mientras que para las otras secciones solo se reserva el espacio necesario.  Ver la descripción de un programa de usuario más arriba.  El compilador supone que el programa es cargado en la posición cero de la memoria, por lo que todas las direcciones generadas por el programa se toman a partir de cero, por eso se denominan <FONT color="red"><i>direcciones virtuales</i></FONT>. </LI>
+      <LI> La memoria física se divide en marcos de 128 bytes cada uno, en total la máquina cuenta con 32 marcos, estas direcciones se denominan <FONT color="red"><I> direcciones físicas</I></FONT>.  Esta cantidad de puede variar cambiando la constante "NumPhysPages" en "machine.h" del directorio "machine".  Es una de las pocas cosas que pueden cambiar del hardware de este proyecto. </LI>
+<PRE>
+#define NumPhysPages    32
+</PRE>
+      <LI> Cada programa de usuario es ejecutado por un hilo dentro del kernel de NachOS, estos son los hilos que manejamos con la clase "Thread" y sus métodos asociados.  Cada uno de estos hilos en el proyecto "userprog" cuenta con una variable asociada "space", de tipo "AddrSpace", que representa como está distribuida la memoria del proceso en la memoria física de la máquina. </LI>
+      <LI> Cada variable de tipo "AddrSpace" tiene una tabla de páginas, "pageTable" que establece la relación entre las <FONT color="red"><I>direcciones virtuales</I></FONT> y las <FONT color="red"><I>direcciones físicas</I></FONT> asignadas al hilo.  El código original de NachOS carga todos los programas en la posición cero de memoria física, como se muestra en esta parte del constructor de "AddrSpace": </LI>
+<PRE>
+...
+// first, set up the translation 
+    pageTable = new TranslationEntry[numPages];
+    for (i = 0; i < numPages; i++) {
+	pageTable[i].virtualPage = i;
+	pageTable[i].physicalPage = i;
+	pageTable[i].valid = TRUE;
+	pageTable[i].use = FALSE;
+	pageTable[i].dirty = FALSE;
+	pageTable[i].readOnly = FALSE;  // if the code segment was entirely on 
+					// a separate page, we could set its 
+					// pages to be read-only
+    }
+...
+</PRE>
+      <LI> "numPages" representa la cantidad total de páginas que tiene este proceso, incluye "Text", "Init Data", "Uninit Data" y "Stack". </LI>
+   </UL>
+<BR>
+
+<LI> Rutina de arranque para programas de usuario en NachOS </LI>
+   <UL>
+      <LI> Similar a otros sistemas operativos, todos los programas de usuario de NachOS son enlazados con una rutina de inicialización, hecha en ensamblador "start.s".  En este código se puede estudiar como hace un programa de usuario para comenzar su ejecución, adjuntamos esta parte del código: </LI>
+<PRE>
+/* -------------------------------------------------------------
+ * __start
+ *	Initialize running a C program, by calling "main". 
+ *
+ * 	NOTE: This has to be first, so that it gets loaded at location 0.
+ *	The Nachos kernel always starts a program by jumping to location 0.
+ * -------------------------------------------------------------
+ */
+
+	.globl __start
+	.ent	__start
+__start:
+	jal	main
+	move	$4,$0		
+	jal	Exit	 /* if we return from main, exit(0) */
+	.end __start
+</PRE>
+      <LI> Observe que lo primero que se hace es llamar a la rutina "main" con esta instrucción de ensamblador MIPS "jal main", y como lo indican los comentarios, si esta rutina regresa entonces se llama a "Exit", esto garantiza que todos los programas de usuario llamen a "Exit" cuando finalizan.  La única forma de que "main" no retorne es que el programa de usuario llame directamente a "Exit" </LI>
+      <LI> Recordamos que todas las instrucciones del ensamblador de MIPS son de cuatro bytes.  El primer byte representa el código de operación </LI>
+      <LI> El programa de usuario es cargardo a partir de la posición lógica 0 (cero) de memoria, por lo que el "jal main" queda en esa dirección, en consecuencia, el "move $4,$0" queda en la posición 4 y el "jal Exit" en la 8.  Esta es la razón por la cual debemos hacer que la dirección de retorno de la rutina a la que el usuario le hizo Fork sea la dirección 4. </LI>
+      <LI> Advertencia: si por alguna razón el llamado al sistema "Exit" retorna, el simulador continuaría ejecutando instrucciones de la posición 12 en adelante, lo que normalmente produce una excepción de instrucción ilegal ("illegal instruction exception"), que es atrapada por el "ExceptionHandler", pero cuando el simulador se la encuentra finaliza la simulación completa y termina NachOS </LI>
+   </UL>
+<LI> Agregar el método en <I>ExceptionHandler</I> que se va a encargar de atender el llamado al sistema "Fork" </LI>
+      <UL>
+         <LI> En "exception.cc", debemos agregar en el método "ExceptionHandler" la opción para atrapar este llamado </LI>
+<PRE>
+       case SyscallException:
+          switch ( type ) {
+             case SC_Halt:		// System call # 0
+                Nachos_Halt();
+                break;
+// ...
+             case SC_Write:		// System call # 7
+                Nachos_Write();
+                break;
+// ...
+             case SC_Fork:		// System call # 9
+                Nachos_Fork();
+                break;
+</PRE>
+         <LI> También debemos agregar el método "Nachos_Fork" para atender el llamado </LI>
+<PRE>
+void Nachos_Fork() {			// System call 9
+
+	DEBUG( 'u', "Entering Fork System call\n" );
+	// We need to create a new kernel thread to execute the user thread
+	Thread * newT = new Thread( "child to execute Fork code" );
+
+	// We need to share the Open File Table structure with this new child
+
+	// Child and father will also share the same address space, except for the stack
+	// Text, init data and uninit data are shared, a new stack area must be created
+	// for the new child
+	// We suggest the use of a new constructor in AddrSpace class,
+	// This new constructor will copy the shared segments (space variable) from currentThread, passed
+	// as a parameter, and create a new stack for the new child
+	newT->space = new AddrSpace( currentThread->space );
+
+	// We (kernel)-Fork to a new method to execute the child code
+	// Pass the user routine address, now in register 4, as a parameter
+	// Note: in 64 bits register 4 need to be casted to (void *)
+	newT->Fork( NachosForkThread, machine->ReadRegister( 4 ) );
+
+	returnFromSystemCall();	// This adjust the PrevPC, PC, and NextPC registers
+
+	DEBUG( 'u', "Exiting Fork System call\n" );
+}	// Kernel_Fork
+
+</PRE>
+         <LI> Debemos crear el método para ejecutar el código del usuario </LI>
+<PRE>
+// Pass the user routine address as a parameter for this function
+// This function is similar to "StartProcess" in "progtest.cc" file under "userprog"
+// Requires a correct AddrSpace setup to work well
+
+void NachosForkThread( void * p ) { // for 64 bits version
+
+    AddrSpace *space;
+
+    space = currentThread->space;
+    space->InitRegisters();             // set the initial register values
+    space->RestoreState();              // load page table register
+
+// Set the return address for this thread to the same as the main thread
+// This will lead this thread to call the exit system call and finish
+    machine->WriteRegister( RetAddrReg, 4 );
+
+    machine->WriteRegister( PCReg, (long) p );
+    machine->WriteRegister( NextPCReg, (long) p + 4 );
+
+    machine->Run();                     // jump to the user progam
+    ASSERT(FALSE);
+
+}
+
+</PRE>
+
+      </UL>
+   </UL>
+</OL>
+</DIV>
+<HR>
+</BODY>
+</HTML>
+
