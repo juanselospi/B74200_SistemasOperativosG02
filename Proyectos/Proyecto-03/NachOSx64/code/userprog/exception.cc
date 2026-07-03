@@ -151,7 +151,8 @@ static void ReadUserString(int userAddr, char *buf, int maxSize) { // evita repe
    int val = 0;
 
    do {
-      machine->ReadMem(userAddr + i, 1, &val);
+      
+      while(!machine->ReadMem(userAddr + i, 1, &val)) { }
       buf[i] = (char)val;
       i++;
    } while(val != 0 && i < maxSize - 1);
@@ -166,7 +167,7 @@ static void WriteUserBuffer(int userAddr, const char *buf, int size) {
    // verificar probar al copiar entre user y kernel
    for(int i = 0; i < size; i++) {
 
-      machine->WriteMem(userAddr + i, 1, (int)buf[i]);
+      while(!machine->WriteMem(userAddr + i, 1, (int)buf[i])) { }
    }
 }
 
@@ -233,8 +234,8 @@ static void ExecProcess(void *arg) {
       return;
    }
 
+   // AddrSpace conserva el ejecutable para paginacion bajo demanda
    AddrSpace *space = new AddrSpace(executable);
-   delete executable;
    currentThread->space = space;
    nachosFileTable = new NachosOpenFilesTable();
    nachosFileTable->addThread();
@@ -411,7 +412,8 @@ void NachOS_Write() {
 
    for(int i = 0; i < size; i++) {
 
-      machine->ReadMem(bufAddr + i, 1, &val);
+      // Reintentar ReadMem en modo VM para no perder bytes
+      while(!machine->ReadMem(bufAddr + i, 1, &val)) { }
       buffer[i] = (char)val;
    }
 
@@ -482,7 +484,9 @@ void NachOS_Read() {
          
             stats->numConsoleCharsRead++;
             consoleReadSem->V();
-            machine->WriteMem(bufAddr + bytesRead, 1, (int)c);
+
+            // Reintentar WriteMem en modo VM para no perder el caracter leido
+            while(!machine->WriteMem(bufAddr + bytesRead, 1, (int)c)) { }
             bytesRead++;
          }
          
@@ -1124,10 +1128,13 @@ ExceptionHandler(ExceptionType which)
           break;
 
        case PageFaultException:
-          stats->numPageFaults++;
-          printf("Page fault at address %d\n",
-                 machine->ReadRegister(BadVAddrReg));
-          interrupt->Halt();
+          {
+             int badAddr = machine->ReadRegister(BadVAddrReg);
+             int vpn = (unsigned)badAddr / PageSize;
+             DEBUG('a', "Page fault at address %d (vpn %d)\n", badAddr, vpn);
+             // Resolver page fault con paginacion bajo demanda
+             currentThread->space->HandlePageFault(vpn);
+          }
           break;
 
        case ReadOnlyException:

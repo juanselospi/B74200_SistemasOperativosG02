@@ -32,8 +32,7 @@
 const int PageSize = SectorSize; 	// set the page size equal to
 					// the disk sector size, for
 					// simplicity
-
-const int NumPhysPages = 1024; // Si se deja en 32 correr ForkExec supera las paginas disponibles, por la limitacion inherente de espacio
+const int NumPhysPages = 32;
 const int MemorySize = NumPhysPages * PageSize;
 const int TLBSize = 4;			// if there is a TLB, make it small
 

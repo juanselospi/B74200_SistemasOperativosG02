@@ -18,9 +18,14 @@
 #include "copyright.h"
 #include "system.h"
 #include "addrspace.h"
-#include "noff.h"
 #include "synch.h"
 #include "bitmap.h"
+
+#ifdef VM
+#include "coremap.h"
+#include "swap.h"
+#include "lru.h"
+#endif
 
 #include <string.h>
 
@@ -49,6 +54,7 @@ SwapHeader (NoffHeader *noffH)
     noffH->uninitData.inFileAddr = WordToHost(noffH->uninitData.inFileAddr);
 }
 
+#ifndef VM
 static unsigned int
 AddrToPhys(TranslationEntry *pageTable, unsigned int virtAddr)
 {
@@ -56,6 +62,7 @@ AddrToPhys(TranslationEntry *pageTable, unsigned int virtAddr)
     unsigned int offset = virtAddr % PageSize;
     return pageTable[vpn].physicalPage * PageSize + offset;
 }
+#endif
 
 
 void
@@ -126,6 +133,9 @@ AddrSpace::DeallocatePhysicalPage(int physPage)
 
         frameRefCount[physPage] = 0;
         freePhysPages->Clear(physPage);
+#ifdef VM
+        CoreMapClear(physPage);
+#endif
     }
 
     physPageLock->Release();
@@ -143,6 +153,15 @@ AddrSpace::AllocatePageTable(unsigned int nPages)
 
     for(unsigned int i = 0; i < numPages; i++) {
 
+#ifdef VM
+        pageTable[i].virtualPage = i;
+        pageTable[i].physicalPage = -1;
+        pageTable[i].valid = false;
+        pageTable[i].use = false;
+        pageTable[i].dirty = false;
+        pageTable[i].readOnly = false;
+        swapLocations[i] = -1;
+#else
         int physPage = AllocatePhysicalPage();
         ASSERT(physPage != -1);
 
@@ -152,6 +171,7 @@ AddrSpace::AllocatePageTable(unsigned int nPages)
         pageTable[i].use = false;
         pageTable[i].dirty = false;
         pageTable[i].readOnly = false;
+#endif
     }
 }
 
@@ -159,6 +179,7 @@ AddrSpace::AllocatePageTable(unsigned int nPages)
 void
 AddrSpace::LoadSegment(OpenFile * executable, int segmentSize, unsigned int virtualAddr, int inFileAddr)
 {
+#ifndef VM
     char * pageBuffer = new char[PageSize];
     int remaining = segmentSize;
     int fileOffset = inFileAddr;
@@ -183,6 +204,7 @@ AddrSpace::LoadSegment(OpenFile * executable, int segmentSize, unsigned int virt
     }
 
     delete[] pageBuffer;
+#endif
 }
 
 
@@ -203,29 +225,39 @@ AddrSpace::LoadSegment(OpenFile * executable, int segmentSize, unsigned int virt
 
 AddrSpace::AddrSpace(OpenFile *executable) {
 
-    NoffHeader noffH;
+    NoffHeader hdr;
     unsigned int size;
 
-    executable->ReadAt((char *)&noffH, sizeof(noffH), 0);
+    executable->ReadAt((char *)&hdr, sizeof(hdr), 0);
 
-    if((noffH.noffMagic != NOFFMAGIC) && (WordToHost(noffH.noffMagic) == NOFFMAGIC)) {
+    if((hdr.noffMagic != NOFFMAGIC) && (WordToHost(hdr.noffMagic) == NOFFMAGIC)) {
 
-        SwapHeader(&noffH);
+        SwapHeader(&hdr);
     }
 
-    ASSERT(noffH.noffMagic == NOFFMAGIC);
+    ASSERT(hdr.noffMagic == NOFFMAGIC);
 
-    size = noffH.code.size + noffH.initData.size + noffH.uninitData.size + UserStackSize;
+    size = hdr.code.size + hdr.initData.size + hdr.uninitData.size + UserStackSize;
     unsigned int nPages = divRoundUp(size, PageSize);
 
+#ifndef VM
     ASSERT(nPages <= NumPhysPages);
+#endif
 
     DEBUG('a', "Initializing address space, num pages %d, size %d\n", nPages, nPages * PageSize);
 
     threadCount = 1;
     parentSpace = NULL;
+
+#ifdef VM
+    noffH = hdr;
+    execFile = executable;
+    swapLocations = new int[nPages];
+#endif
+
     AllocatePageTable(nPages);
 
+#ifndef VM
     if(noffH.code.size > 0) {
 
         DEBUG('a', "Initializing code segment, at 0x%x, size %d\n", noffH.code.virtualAddr, noffH.code.size);
@@ -237,6 +269,7 @@ AddrSpace::AddrSpace(OpenFile *executable) {
         DEBUG('a', "Initializing data segment, at 0x%x, size %d\n", noffH.initData.virtualAddr, noffH.initData.size);
         LoadSegment(executable, noffH.initData.size, noffH.initData.virtualAddr, noffH.initData.inFileAddr);
     }
+#endif
 }
 
 
@@ -251,15 +284,43 @@ AddrSpace::AddrSpace(AddrSpace *parent) {
 
     unsigned int firstStackVpn = numPages - numStackPages;
 
+#ifdef VM
+    noffH = parent->noffH;
+    execFile = parent->execFile;
+    swapLocations = new int[numPages];
+#endif
+
     pageTable = new TranslationEntry[numPages];
 
     for(unsigned int i = 0; i < numPages; i++) {
 
         pageTable[i].virtualPage = i;
-        pageTable[i].valid = true;
         pageTable[i].use = false;
         pageTable[i].dirty = false;
-        pageTable[i].readOnly = false;
+        pageTable[i].readOnly = parent->pageTable[i].readOnly;
+
+#ifdef VM
+        swapLocations[i] = parent->swapLocations[i];
+
+        if(i < firstStackVpn) {
+
+            pageTable[i].valid = parent->pageTable[i].valid;
+            pageTable[i].physicalPage = parent->pageTable[i].physicalPage;
+
+            if(parent->pageTable[i].valid) {
+
+                physPageLock->Acquire();
+                frameRefCount[pageTable[i].physicalPage]++;
+                physPageLock->Release();
+            }
+
+        } else {
+
+            pageTable[i].valid = false;
+            pageTable[i].physicalPage = -1;
+        }
+#else
+        pageTable[i].valid = true;
 
         if(i < firstStackVpn) {
 
@@ -274,6 +335,7 @@ AddrSpace::AddrSpace(AddrSpace *parent) {
             ASSERT(physPage != -1);
             pageTable[i].physicalPage = physPage;
         }
+#endif
     }
 }
 
@@ -291,11 +353,30 @@ AddrSpace::~AddrSpace()
     }
 
     for(unsigned int i = 0; i < numPages; i++) {
-        
+
+#ifdef VM
+        if(pageTable[i].valid) {
+
+            DeallocatePhysicalPage(pageTable[i].physicalPage);
+        }
+
+        if(swapLocations[i] >= 0) {
+
+            swapManager->FreeSlot(swapLocations[i]);
+        }
+#else
         DeallocatePhysicalPage(pageTable[i].physicalPage);
+#endif
     } 
 
     delete[] pageTable;
+
+#ifdef VM
+    delete[] swapLocations;
+    if(parentSpace == NULL) {
+        delete execFile;
+    }
+#endif
 }
 
 
@@ -351,7 +432,13 @@ void AddrSpace::InitRegistersForFork(int funcAddr) {
 //----------------------------------------------------------------------
 
 void AddrSpace::SaveState() 
-{}
+{
+#ifdef VM
+    // Sincronizar bits use/dirty de TLB a page table e invalidar TLB
+    SyncTLBToPageTable();
+    InvalidateTLB();
+#endif
+}
 
 //----------------------------------------------------------------------
 // AddrSpace::RestoreState
@@ -363,6 +450,362 @@ void AddrSpace::SaveState()
 
 void AddrSpace::RestoreState() {
 
+#ifdef VM
+    machine->pageTable = NULL;
+    machine->pageTableSize = 0;
+    InvalidateTLB();
+#else
     machine->pageTable = pageTable;
     machine->pageTableSize = numPages;
+#endif
 }
+
+#ifdef VM
+
+void
+AddrSpace::SyncTLBToPageTable()
+{
+    for(int i = 0; i < TLBSize; i++) {
+
+        if(!machine->tlb[i].valid) {
+            continue;
+        }
+
+        int vpn = machine->tlb[i].virtualPage;
+
+        if(vpn >= 0 && (unsigned)vpn < numPages && pageTable[vpn].valid) {
+
+            pageTable[vpn].use = pageTable[vpn].use || machine->tlb[i].use;
+            pageTable[vpn].dirty = pageTable[vpn].dirty || machine->tlb[i].dirty;
+        }
+    }
+}
+
+void
+AddrSpace::SyncTLBToFrames()
+{
+    for(int i = 0; i < TLBSize; i++) {
+
+        if(!machine->tlb[i].valid) {
+            continue;
+        }
+
+        int vpn = machine->tlb[i].virtualPage;
+
+        if(vpn >= 0 && (unsigned)vpn < numPages && pageTable[vpn].valid) {
+
+            pageTable[vpn].use = pageTable[vpn].use || machine->tlb[i].use;
+            pageTable[vpn].dirty = pageTable[vpn].dirty || machine->tlb[i].dirty;
+
+            if(machine->tlb[i].use) {
+                frameLRU->Touch(pageTable[vpn].physicalPage);
+            }
+        }
+    }
+}
+
+void
+AddrSpace::InvalidateTLB()
+{
+    for(int i = 0; i < TLBSize; i++) {
+        machine->tlb[i].valid = false;
+    }
+}
+
+void
+AddrSpace::InvalidateTLBEntry(int vpn)
+{
+    for(int i = 0; i < TLBSize; i++) {
+
+        if(machine->tlb[i].valid && machine->tlb[i].virtualPage == vpn) {
+
+            if(vpn >= 0 && (unsigned)vpn < numPages && pageTable[vpn].valid) {
+
+                pageTable[vpn].use = pageTable[vpn].use || machine->tlb[i].use;
+                pageTable[vpn].dirty = pageTable[vpn].dirty || machine->tlb[i].dirty;
+            }
+            machine->tlb[i].valid = false;
+        }
+    }
+}
+
+int
+AddrSpace::FindTLBEntry(int vpn)
+{
+    for(int i = 0; i < TLBSize; i++) {
+
+        if(machine->tlb[i].valid && machine->tlb[i].virtualPage == vpn) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int
+AddrSpace::AllocateTLBSlot()
+{
+    for(int i = 0; i < TLBSize; i++) {
+
+        if(!machine->tlb[i].valid) {
+            return i;
+        }
+    }
+
+    int victim = tlbLRU->Oldest();
+    if(victim < 0) {
+        victim = 0;
+    }
+
+    if(machine->tlb[victim].valid) {
+
+        int vpn = machine->tlb[victim].virtualPage;
+
+        if(vpn >= 0 && (unsigned)vpn < numPages && pageTable[vpn].valid) {
+
+            pageTable[vpn].use = machine->tlb[victim].use;
+            pageTable[vpn].dirty = pageTable[vpn].dirty || machine->tlb[victim].dirty;
+        }
+    }
+
+    return victim;
+}
+
+void
+AddrSpace::UpdateTLB(int vpn)
+{
+    int slot = FindTLBEntry(vpn);
+
+    if(slot < 0) {
+        slot = AllocateTLBSlot();
+    }
+
+    machine->tlb[slot] = pageTable[vpn];
+    machine->tlb[slot].virtualPage = vpn;
+    machine->tlb[slot].valid = true;
+    tlbLRU->Touch(slot);
+}
+
+bool
+AddrSpace::IsCodeOnlyPage(unsigned int vpn)
+{
+    unsigned vAddr = vpn * PageSize;
+    unsigned vEnd = vAddr + PageSize;
+
+    if(noffH.code.size <= 0) {
+        return false;
+    }
+
+    unsigned codeStart = (unsigned)noffH.code.virtualAddr;
+    unsigned codeEnd = codeStart + (unsigned)noffH.code.size;
+
+    if(vAddr < codeStart || vAddr >= codeEnd) {
+        return false;
+    }
+
+    if(vEnd > codeEnd) {
+        return false;
+    }
+
+    if(noffH.initData.size > 0) {
+
+        unsigned dataStart = (unsigned)noffH.initData.virtualAddr;
+        unsigned dataEnd = dataStart + (unsigned)noffH.initData.size;
+
+        if(vEnd > dataStart && vAddr < dataEnd) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+AddrSpace::LoadPageSegment(char *mem, unsigned int vAddr, unsigned int segVA,
+                           int segSize, int inFileAddr)
+{
+    unsigned segEnd = segVA + (unsigned)segSize;
+    unsigned pageEnd = vAddr + PageSize;
+
+    if(vAddr >= segEnd || pageEnd <= segVA) {
+        return;
+    }
+
+    unsigned copyStart = (vAddr > segVA) ? vAddr : segVA;
+    unsigned copyEnd = (pageEnd < segEnd) ? pageEnd : segEnd;
+    int copySize = (int)(copyEnd - copyStart);
+
+    if(copySize <= 0) {
+        return;
+    }
+
+    int pageOffset = (int)(copyStart - vAddr);
+    int fileOffset = inFileAddr + (int)(copyStart - segVA);
+
+    execFile->ReadAt(mem + pageOffset, copySize, fileOffset);
+}
+
+void
+AddrSpace::LoadPageContent(int vpn, int physPage)
+{
+    char *mem = &(machine->mainMemory[physPage * PageSize]);
+    unsigned vAddr = vpn * PageSize;
+
+    bzero(mem, PageSize);
+
+    if(swapLocations[vpn] >= 0) {
+
+        swapManager->ReadPage(swapLocations[vpn], mem);
+        return;
+    }
+
+    if(noffH.code.size > 0) {
+
+        LoadPageSegment(mem, vAddr, (unsigned)noffH.code.virtualAddr,
+                        noffH.code.size, noffH.code.inFileAddr);
+    }
+
+    if(noffH.initData.size > 0) {
+
+        LoadPageSegment(mem, vAddr, (unsigned)noffH.initData.virtualAddr,
+                        noffH.initData.size, noffH.initData.inFileAddr);
+    }
+}
+
+int
+AddrSpace::EvictFrame()
+{
+    int bestFrame = -1;
+    int oldestTime = -1;
+
+    if(currentThread->space != NULL) {
+        currentThread->space->SyncTLBToFrames();
+    }
+
+    AddrSpace *curSpace = currentThread->space;
+    int pcVpn = (curSpace != NULL) ? ((unsigned)machine->ReadRegister(PCReg) / PageSize) : -1;
+
+    physPageLock->Acquire();
+
+    for(int f = 0; f < NumPhysPages; f++) {
+
+        if(!coreMap[f].inUse) {
+            continue;
+        }
+
+        if(frameRefCount[f] > 1) {
+            continue;
+        }
+
+        CoreMapEntry *entry = CoreMapLookup(f);
+        AddrSpace *owner = entry->space;
+        int ownerVpn = entry->vpn;
+
+        if(owner == NULL || ownerVpn < 0) {
+            continue;
+        }
+
+        if(owner == curSpace && ownerVpn == pcVpn) {
+            continue;   // Protege la pagina de codigo de la instruccion actual
+        }
+
+        TranslationEntry *victimEntry = &owner->pageTable[ownerVpn];
+
+        if(!victimEntry->valid) {
+            continue;
+        }
+
+        int usedTime = frameLRU->GetLastUsed(f);
+
+        if(usedTime <= 0) {
+            continue;
+        }
+
+        if(bestFrame == -1 || usedTime < oldestTime) {
+            oldestTime = usedTime;
+            bestFrame = f;
+        }
+    }
+
+    if(bestFrame == -1) {
+
+        physPageLock->Release();
+        return -1;
+    }
+
+    CoreMapEntry *entry = CoreMapLookup(bestFrame);
+    AddrSpace *owner = entry->space;
+    int ownerVpn = entry->vpn;
+    TranslationEntry *victimEntry = &owner->pageTable[ownerVpn];
+    char *mem = &(machine->mainMemory[bestFrame * PageSize]);
+
+    if(victimEntry->dirty && !victimEntry->readOnly) {
+
+        if(owner->swapLocations[ownerVpn] < 0) {
+            owner->swapLocations[ownerVpn] = swapManager->AllocateSlot();
+            ASSERT(owner->swapLocations[ownerVpn] >= 0);
+        }
+        swapManager->WritePage(owner->swapLocations[ownerVpn], mem);
+    }
+
+    victimEntry->valid = false;
+    victimEntry->physicalPage = -1;
+    owner->InvalidateTLBEntry(ownerVpn);
+    CoreMapClear(bestFrame);
+    frameRefCount[bestFrame] = 0;
+    freePhysPages->Clear(bestFrame);
+    frameLRU->Clear(bestFrame);
+
+    physPageLock->Release();
+    return bestFrame;
+}
+
+void
+AddrSpace::LoadPage(int vpn)
+{
+    ASSERT(!pageTable[vpn].valid);
+
+    int physPage = AllocatePhysicalPage();
+
+    if(physPage == -1) {
+        physPage = EvictFrame();
+        ASSERT(physPage >= 0);
+        frameRefCount[physPage] = 1;
+        freePhysPages->Mark(physPage);
+    }
+
+    LoadPageContent(vpn, physPage);
+
+    pageTable[vpn].physicalPage = physPage;
+    pageTable[vpn].valid = true;
+    pageTable[vpn].use = true;
+    pageTable[vpn].dirty = false;
+    pageTable[vpn].readOnly = IsCodeOnlyPage(vpn);
+
+    CoreMapSet(physPage, this, vpn);
+    frameLRU->Touch(physPage);
+}
+
+void
+AddrSpace::HandlePageFault(int vpn)
+{
+    if(vpn < 0 || (unsigned)vpn >= numPages) {
+        printf("Invalid page fault at vpn %d\n", vpn);
+        interrupt->Halt();
+        return;
+    }
+
+    SyncTLBToFrames();
+
+    if(pageTable[vpn].valid) {
+
+        frameLRU->Touch(pageTable[vpn].physicalPage);
+        UpdateTLB(vpn);
+        return;
+    }
+
+    stats->numPageFaults++;
+    LoadPage(vpn);
+    UpdateTLB(vpn);
+}
+
+#endif

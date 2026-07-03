@@ -38,6 +38,14 @@ class Lock;
 extern BitMap * freePhysPages;
 extern Lock * physPageLock;
 extern int * frameRefCount;
+
+#ifdef VM
+class SwapManager;
+class LRUManager;
+extern SwapManager *swapManager;
+extern LRUManager *frameLRU;
+extern LRUManager *tlbLRU;
+#endif
 #endif
 
 #ifdef FILESYS_NEEDED 		// FILESYS or FILESYS_STUB 

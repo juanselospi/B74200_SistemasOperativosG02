@@ -13,6 +13,11 @@
 #include "bitmap.h"
 #include "synch.h"
 #include "addrspace.h"
+#ifdef VM
+#include "coremap.h"
+#include "swap.h"
+#include "lru.h"
+#endif
 #endif
 
 // This defines *all* of the global data structures used by Nachos.
@@ -203,7 +208,17 @@ Initialize(int argc, char **argv)
         frameRefCount[i] = 0;
     }
 
+#ifndef VM
+    // No reservar marcos de prueba en VM nintendo switch 2 amazon precio
     AddrSpace::ReserveTestPhysPages();
+#endif
+
+#ifdef VM
+    CoreMapInit();
+    swapManager = new SwapManager();
+    frameLRU = new LRUManager(NumPhysPages);
+    tlbLRU = new LRUManager(TLBSize);
+#endif
 #endif
 
 #ifdef FILESYS
@@ -237,7 +252,14 @@ Cleanup()
 #endif
     
 #ifdef USER_PROGRAM
+#ifdef VM
+    delete tlbLRU;
+    delete frameLRU;
+    delete swapManager;
+    CoreMapDone();
+#else
 	AddrSpace::ReleaseTestPhysPages();
+#endif
 	delete[] frameRefCount;
 	delete physPageLock;
 	delete freePhysPages;

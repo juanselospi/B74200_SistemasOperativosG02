@@ -38,17 +38,8 @@ StartProcess(const char *filename)
         nachosFileTable->addThread();
     }
 
-    return;
-    }
-
+    // AddrSpace conserva el ejecutable
     currentThread->space = new AddrSpace(executable);
-
-    if(nachosFileTable == NULL) {
-        nachosFileTable = new NachosOpenFilesTable();
-        nachosFileTable->addThread();
-    }
-
-    delete executable;			// close file
 
     currentThread->space->InitRegisters();		// set the initial register values
     currentThread->space->RestoreState();		// load page table register

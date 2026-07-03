@@ -15,6 +15,7 @@
 
 #include "copyright.h"
 #include "filesys.h"
+#include "noff.h"
 
 #define UserStackSize		4096 	// increase this as necessary!
 #define MAX_OPEN_FILES 128
@@ -48,6 +49,10 @@ class AddrSpace {
 
     int newStack();
 
+#ifdef VM
+    void HandlePageFault(int vpn);
+#endif
+
     OpenFile* openFiles[MAX_OPEN_FILES];
 
   private:
@@ -61,10 +66,32 @@ class AddrSpace {
 
     int threadCount;
 
+#ifdef VM
+    OpenFile *execFile;
+    NoffHeader noffH;
+    int *swapLocations;
+#endif
+
     void AllocatePageTable(unsigned int numPages);
     void LoadSegment(OpenFile *executable, int segmentSize, unsigned int virtualAddr, int inFileAddr);
     int  AllocatePhysicalPage();
     void DeallocatePhysicalPage(int physPage);
+
+#ifdef VM
+    void LoadPage(int vpn);
+    int  EvictFrame();
+    void LoadPageContent(int vpn, int physPage);
+    void LoadPageSegment(char *mem, unsigned int vAddr, unsigned int segVA,
+                         int segSize, int inFileAddr);
+    bool IsCodeOnlyPage(unsigned int vpn);
+    void UpdateTLB(int vpn);
+    void SyncTLBToPageTable();
+    void SyncTLBToFrames();
+    void InvalidateTLB();
+    void InvalidateTLBEntry(int vpn);
+    int  FindTLBEntry(int vpn);
+    int  AllocateTLBSlot();
+#endif
 
 };
 

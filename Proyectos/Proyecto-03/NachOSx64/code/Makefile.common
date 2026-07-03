@@ -106,9 +106,15 @@ USERPROG_C = ../userprog/addrspace.cc\
 USERPROG_O = addrspace.o bitmap.o exception.o progtest.o console.o machine.o \
 	mipssim.o translate.o nachostabla.o
 
-VM_H = 
-VM_C = 
-VM_O = 
+VM_H = ../vm/coremap.h\
+	../vm/swap.h\
+	../vm/lru.h
+
+VM_C = ../vm/coremap.cc\
+	../vm/swap.cc\
+	../vm/lru.cc
+
+VM_O = coremap.o swap.o lru.o
 
 FILESYS_H =../filesys/directory.h \
 	../filesys/filehdr.h\
