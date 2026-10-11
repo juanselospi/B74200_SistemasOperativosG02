@@ -1,0 +1,73 @@
+Modalidad: individual
+Objetivos
+Entender el procedimiento para cargar un programa de usuario de NachOS a la memoria
+Cambiar el sistema de memoria de NachOS para permitir que varios procesos o hilos puedan correr
+Construir elementos para realizar la administración de memoria
+Entender la estructura interna de los programas de usuario, en especial el encabezado: Header, Text, InitData
+Entender como los programas de usuario son leidos del disco
+Entender las estructuras de datos necesarias para la administración de procesos
+Representación interna de un hilo, clase Thread
+Representación interna de la memoria de un hilo de usuario, clase AddrSpace
+Mapeo de memoria lógica a memoria física, PageTable
+Completar los llamados al sistema relacionados con la ejecución de hilos o procesos: SC_Halt, SC_Fork, SC_Yield, SC_Exec, SC_Join, SC_Exit
+Completar los llamados al sistema relacionados con archivos: SC_Read, SC_Write, SC_Close, SC_Create
+Entender la administración de recursos por medio de una tabla (tabla de recursos abiertos)
+Completar los elementos de sincronización de hilos
+Completar la funcionalidad de los sockets: SC_Socket, SC_Connect
+Procedimiento
+Un programa de usuario se ejecuta cuando se inicia NachOS con la opción "-x ../test/halt"
+Este programa debe ser leido del disco, colocado en la memoria de MIPS y crear el hilo de kernel correspondiente para ejecutarlo
+Modificar la clases "AddrSpace" en los archivos "addrspace.h" y "addrspace.cc"
+Vamos a dividir la memoria de NachOS en 32 marcos de 128 bytes cada una (ambas constantes) y colocar las estructuras de datos necesarias para realizar la administración de memoria
+Revisar la declaración de la memoria de la máquina MIPS emulado por NachOS (machine/machine.h)
+Investigar como NachOS carga los programas a memoria originalmente
+Para ello hay que revisar los archivos "addrspace.h" y "addrspace.cc" en el directorio "userprog"
+El constructor actual es el encargado de tomar el programa de usuario del disco y cargarlo en la memoria física
+Comprender como se determina el tamaño del programa de usuario y la cantidad de páginas a utilizar
+¿Cuántas páginas se le da a la pila del proceso?
+Entender qué es una tabla de páginas y su uso dentro de NachOS
+Comprender el mapeo que se hace originalmente entre las páginas lógicas y las físicas
+Revisar el funcionamiento de los bits de protección de la tabla de páginas
+Crear las estructuras necesarias para manipular la memoria de MIPS con paginación
+Debe tener una estructura para determinar cuáles páginas de la memoria están libre/ocupadas (BitMap)
+Definir una nueva manera de entregar las páginas al programa de usuario utilizando paginación, diferente de la manera secuencial
+Comprobar que el programa de usuario puede ser cargado en distintas páginas de memoria, colocando algunas de las páginas de memoria como ocupadas antes de la ejecución
+Construir un programa de usuario que demuestre que sus cambios son funcionales, en el directorio "test"
+Tareas que debe completar en este proyecto
+La carga de procesos en páginas a partir del archivo ejecutable (addrspace.h y addrspace.cc)
+La administración de memoria para que el programa de usuario solo ocupe las páginas necesarias
+Buscar una página de memoria libre
+Asignar esa página al programa del usuario y marcarla como ocupada
+Agregar esta información a la tabla de páginas del proceso
+Completar al menos los siguientes llamdos al sistema
+Procesos e hilos: SC_Halt, SC_Exit, SC_Fork, SC_Yield, SC_Exec, SC_Join
+Archivos: SC_Read, SC_Write, SC_Close, SC_Create
+Socket: SC_Connect, SC_Socket
+Distribución de puntos del proyecto
+Cambios realizados a AddrSpace (20%)
+Cambios al constructor, administración de los marcos de memoria (3%)
+Creación del BitMap como instancia de la clase Machine (5%)
+Carga de páginas desde el archivo ejecutable (10%)
+Lograr que el programa de usuario "halt" corra (2%)
+Llamados al sistema (10 en total) (55%)
+Create (1%)
+Open (2%)
+Read (5%)
+Write (5%)
+Close (1%)
+Exec (10%)
+Join (5%)
+Exit (15%)
+Fork (10%)
+Yield (1%)
+Corrida de programas (25%)
+El programa "shell" debe correr (5%)
+El programa "todos" debe correr (10%)
+"todos" internamente ejecuta "copy" que requiere la existencia de un archivo "nachos.1", recomendamos crearlo con cp nachos nachos.1
+Pueden correr el programa de usuario "copy" independientemente para comprobar que funciona correctamente
+Debe crear un archivo "nachos.2" idéntico a "nachos.1"
+Pueden comprobar que se trata del mismo archivo, intentando correrlo
+chmod u+x nachos.2
+./nachos.2 -x ../test/shell debe funcionar
+El programa de usuario "todos" deben correr dentro del programa de usuario "shell" (10%)
+Fin

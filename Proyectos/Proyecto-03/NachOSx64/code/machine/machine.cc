@@ -72,8 +72,9 @@ Machine::Machine(bool debug)
 #endif
 
     singleStep = debug;
-    memoryMap = new BitMap(NumPhysPages);
     CheckEndian();
+
+    mapaMarcos = new BitMap( NumPhysPages );
 }
 
 //----------------------------------------------------------------------
@@ -86,7 +87,58 @@ Machine::~Machine()
     delete [] mainMemory;
     if (tlb != NULL)
         delete [] tlb;
-    delete memoryMap;
+    delete mapaMarcos;
+}
+
+
+//----------------------------------------------------------------------
+// Machine::pedirMarco / soltarMarco / marcosLibres
+//	Interfaz del administrador de marcos.  BitMap::Find ya marca el
+//	bit que devuelve, asi que buscar y reservar es una sola operacion.
+//----------------------------------------------------------------------
+
+int
+Machine::pedirMarco()
+{
+    IntStatus nivelAnterior = interrupt->SetLevel( IntOff );
+    int marco = mapaMarcos->Find();
+    interrupt->SetLevel( nivelAnterior );
+    return marco;
+}
+
+void
+Machine::soltarMarco( int marco )
+{
+    ASSERT( marco >= 0 && marco < NumPhysPages );
+    IntStatus nivelAnterior = interrupt->SetLevel( IntOff );
+    mapaMarcos->Clear( marco );
+    interrupt->SetLevel( nivelAnterior );
+}
+
+int
+Machine::marcosLibres()
+{
+    IntStatus nivelAnterior = interrupt->SetLevel( IntOff );
+    int libres = mapaMarcos->NumClear();
+    interrupt->SetLevel( nivelAnterior );
+    return libres;
+}
+
+// Para comprobar que un programa corre aunque no le toquen marcos
+// seguidos: se "ocupan" los pares antes de cargar nada (opcion -o)
+void
+Machine::ocuparMarcosPares()
+{
+    for ( int i = 0; i < NumPhysPages; i += 2 ) {
+        mapaMarcos->Mark( i );
+    }
+}
+
+void
+Machine::imprimirMarcos()
+{
+    printf( "Marcos ocupados (%d libres de %d): ", mapaMarcos->NumClear(), NumPhysPages );
+    mapaMarcos->Print();
 }
 
 //----------------------------------------------------------------------
@@ -213,3 +265,4 @@ void Machine::WriteRegister(int num, int value)
 	// DEBUG('m', "WriteRegister %d, value %d\n", num, value);
 	registers[num] = value;
     }
+

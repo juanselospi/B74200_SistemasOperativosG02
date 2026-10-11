@@ -40,12 +40,10 @@
 #include "copyright.h"
 #include "utility.h"
 
-// forward declaration para evitar dependencia circular
-class Semaphore;
-
 #ifdef USER_PROGRAM
 #include "machine.h"
 #include "addrspace.h"
+class TablaArchivos;		// userprog/tablaarchivos.h, basta con declararla
 #endif
 
 // CPU register state to be saved on context switch.  
@@ -126,10 +124,12 @@ class Thread {
     void SaveUserState();		// save user-level register state
     void RestoreUserState();		// restore user-level register state
 
-    void CloneUserState(Thread *parent, int entryPoint);
-
     AddrSpace *space;			// User code this thread is running.
-    Semaphore* joinSemaphore;
+    TablaArchivos *archivos;		// recursos abiertos, compartida entre los
+					// hilos de un mismo proceso (Fork)
+    int idProceso;			// entrada en tablaProcesos (SpaceId)
+    bool esHiloPrincipal;		// true para el hilo que arranco con Exec;
+					// solo ese avisa a Join cuando sale
 #endif
 };
 

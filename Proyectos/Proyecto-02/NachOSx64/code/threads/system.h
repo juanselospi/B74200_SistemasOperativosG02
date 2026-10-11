@@ -31,13 +31,9 @@ extern Timer *timer;				// the hardware alarm clock
 
 #ifdef USER_PROGRAM
 #include "machine.h"
+#include "tablaprocesos.h"
 extern Machine* machine;	// user program memory and registers
-
-class BitMap;
-class Lock;
-extern BitMap * freePhysPages;
-extern Lock * physPageLock;
-extern int * frameRefCount;
+extern TablaProcesos* tablaProcesos;	// procesos de usuario vivos (Exec/Join/Exit)
 #endif
 
 #ifdef FILESYS_NEEDED 		// FILESYS or FILESYS_STUB 

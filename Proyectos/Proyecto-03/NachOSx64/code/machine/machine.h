@@ -32,6 +32,9 @@
 const int PageSize = SectorSize; 	// set the page size equal to
 					// the disk sector size, for
 					// simplicity
+
+// En el proyecto 2 se subio a 128 para que cupieran varios programas a la
+// vez; con memoria virtual vuelve a 32 (y a 4 para la prueba de estres)
 const int NumPhysPages = 32;
 const int MemorySize = NumPhysPages * PageSize;
 const int TLBSize = 4;			// if there is a TLB, make it small
@@ -147,6 +150,16 @@ class Machine {
     void Debugger();		// invoke the user program debugger
     void DumpState();		// print the user CPU and memory state 
 
+// Administracion de los marcos de memoria fisica.  El mapa de bits vive
+// aqui porque la memoria es parte de la maquina; los tres metodos son
+// atomicos (apagan interrupciones) porque Exec y Fork de hilos distintos
+// pueden pedir marcos al mismo tiempo.
+    int pedirMarco();			// devuelve un marco libre y lo marca, -1 si no hay
+    void soltarMarco( int marco );	// marca el marco como libre otra vez
+    int marcosLibres();			// cuantos quedan sin usar
+    void ocuparMarcosPares();		// prueba del enunciado: 0,2,4,... ocupados
+    void imprimirMarcos();		// estado del mapa, para depurar
+
 
 // Data structures -- all of these are accessible to Nachos kernel code.
 // "public" for convenience.
@@ -182,9 +195,9 @@ class Machine {
 
     TranslationEntry *pageTable;
     unsigned int pageTableSize;
-	BitMap* memoryMap;  // mapa de páginas físicas libres/ocupadas
 
   private:
+    BitMap * mapaMarcos;	// un bit por marco fisico, 1 = ocupado
     bool singleStep;		// drop back into the debugger after each
 				// simulated instruction
     int runUntilTime;		// drop back into the debugger when simulated

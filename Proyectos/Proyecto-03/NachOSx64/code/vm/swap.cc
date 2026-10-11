@@ -1,71 +1,85 @@
-// Lectura/escritura de paginas en archivo SWAP
-#include "copyright.h"
+// swap.cc
+//	Ver swap.h.  Cada lectura y escritura se cuenta en las estadisticas
+//	de disco, que es donde el enunciado las muestra.
+//
+// Proyecto 3 - memoria virtual
+
 #include "swap.h"
 #include "system.h"
 
-#include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
-
-SwapManager *swapManager = NULL;
-
-SwapManager::SwapManager()
-{
-    maxUsedSlot = -1;
-    lock = new Lock("swap lock");
-    swapMap = new BitMap(NumSwapPages);
-
-    int fd = open("SWAP", O_RDWR | O_CREAT | O_TRUNC, 0666);
-    ASSERT(fd >= 0);
-    ftruncate(fd, NumSwapPages * PageSize);
-    swapFile = new OpenFile(fd);
-}
-
-SwapManager::~SwapManager()
-{
-    delete swapMap;
-    delete swapFile;
-    delete lock;
-    unlink("SWAP");
-}
-
-int
-SwapManager::AllocateSlot()
-{
-    lock->Acquire();
-    int slot = swapMap->Find();
-    if(slot != -1 && slot > maxUsedSlot) {
-        maxUsedSlot = slot;
+Swap::Swap( int numMarcosFisicos ) {
+    numCupos = 2 * numMarcosFisicos;
+    if ( numCupos < MinimoPaginasSwap ) {
+        numCupos = MinimoPaginasSwap;
     }
-    lock->Release();
-    return slot;
-}
+    cupos = new BitMap( numCupos );
+    maxUsado = -1;
 
-void
-SwapManager::FreeSlot(int slot)
-{
-    if(slot < 0) {
-        return;
+    // Con FILESYS_STUB esto es un archivo normal de Unix en el directorio
+    // de trabajo; se borra en el destructor
+    fileSystem->Remove( "SWAP" );
+    if ( !fileSystem->Create( "SWAP", numCupos * PageSize ) ) {
+        printf( "No se pudo crear el archivo de SWAP\n" );
+        ASSERT( false );
     }
-    lock->Acquire();
-    swapMap->Clear(slot);
-    lock->Release();
+    archivo = fileSystem->Open( "SWAP" );
+    ASSERT( archivo != NULL );
+
+    DEBUG( 'v', "SWAP de %d paginas (%d marcos fisicos)\n", numCupos, numMarcosFisicos );
 }
 
-void
-SwapManager::ReadPage(int slot, char *physAddr)
-{
-    lock->Acquire();
-    swapFile->ReadAt(physAddr, PageSize, slot * PageSize);
-    stats->numDiskReads++;
-    lock->Release();
+
+Swap::~Swap() {
+    delete archivo;
+    delete cupos;
+    fileSystem->Remove( "SWAP" );
 }
 
-void
-SwapManager::WritePage(int slot, char *physAddr)
-{
-    lock->Acquire();
-    swapFile->WriteAt(physAddr, PageSize, slot * PageSize);
+
+int Swap::guardar( const char * pagina ) {
+    int cupo = cupos->Find();
+    if ( cupo == -1 ) {
+        return -1;
+    }
+    if ( cupo > maxUsado ) {
+        maxUsado = cupo;
+    }
+    reescribir( cupo, pagina );
+    return cupo;
+}
+
+
+void Swap::reescribir( int cupo, const char * pagina ) {
+    ASSERT( cupo >= 0 && cupo < numCupos && cupos->Test( cupo ) );
+    archivo->WriteAt( pagina, PageSize, cupo * PageSize );
     stats->numDiskWrites++;
-    lock->Release();
+}
+
+
+void Swap::leer( int cupo, char * pagina ) {
+    ASSERT( cupo >= 0 && cupo < numCupos && cupos->Test( cupo ) );
+    archivo->ReadAt( pagina, PageSize, cupo * PageSize );
+    stats->numDiskReads++;
+}
+
+
+void Swap::liberar( int cupo ) {
+    ASSERT( cupo >= 0 && cupo < numCupos );
+    cupos->Clear( cupo );
+}
+
+
+int Swap::cuposLibres() {
+    return cupos->NumClear();
+}
+
+
+int Swap::maximoOcupado() {
+    return maxUsado;
+}
+
+
+void Swap::imprimir() {
+    printf( "SWAP: %d cupos, %d libres, maximo ocupado %d\n",
+            numCupos, cupos->NumClear(), maxUsado );
 }

@@ -40,7 +40,9 @@ Thread::Thread(const char* threadName)
     status = JUST_CREATED;
 #ifdef USER_PROGRAM
     space = NULL;
-    joinSemaphore = new Semaphore("joinSemaphore", 0);
+    archivos = NULL;
+    idProceso = -1;
+    esHiloPrincipal = false;
 #endif
 }
 
@@ -59,21 +61,15 @@ Thread::Thread(const char* threadName)
 Thread::~Thread()
 {
     DEBUG('t', "Deleting thread \"%s\"\n", name);
+
     ASSERT(this != currentThread);
     if (stack != NULL)
-        DeallocBoundedArray((char *) stack, StackSize * sizeof(HostMemoryAddress));
+	DeallocBoundedArray((char *) stack, StackSize * sizeof(HostMemoryAddress));
+
 #ifdef USER_PROGRAM
-    delete joinSemaphore;
-    if(space != NULL) {
-
-        space->RemoveThread();
-
-        if(space->CanDelete()) {
-            
-            delete space;
-        }
-    }
+    delete this->space;
 #endif
+
 }
 
 //----------------------------------------------------------------------
@@ -162,9 +158,7 @@ Thread::Finish ()
     ASSERT(this == currentThread);
     
     DEBUG('t', "Finishing thread \"%s\"\n", getName());
-#ifdef USER_PROGRAM
-    joinSemaphore->V();
-#endif
+    
     threadToBeDestroyed = currentThread;
     Sleep();					// invokes SWITCH
     // not reached
@@ -323,23 +317,4 @@ Thread::RestoreUserState()
     for (int i = 0; i < NumTotalRegs; i++)
 	machine->WriteRegister(i, userRegisters[i]);
 }
-
-
-// copia registros de usuario guardados
-void
-Thread::CloneUserState(Thread *parent, int entryPoint) {
-
-    static int stackSlots = 1;
-
-    for(int i = 0; i < NumTotalRegs; i++) {
-        
-	    userRegisters[i] = parent->userRegisters[i];
-    }
-
-    userRegisters[PCReg] = entryPoint;
-    userRegisters[NextPCReg] = entryPoint + 4;
-    userRegisters[StackReg] = parent->userRegisters[StackReg] - (512 * stackSlots);
-    stackSlots++;
-}
-
 #endif

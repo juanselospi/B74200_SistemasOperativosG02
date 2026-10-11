@@ -96,7 +96,11 @@ void
 Machine::OneInstruction()
 {
     
-    Instruction *instr = new Instruction;  // storage for decoded instruction
+    // La instruccion decodificada vive en la pila: con "new" se fugaba
+    // cada vez que la excepcion que levanta (Exit, acceso invalido) no
+    // regresa a este punto para hacer el delete
+    Instruction instrLocal;
+    Instruction *instr = &instrLocal;
     int raw;
     int nextLoadReg = 0; 	
     int nextLoadValue = 0; 	// record delayed load operation, to apply
@@ -536,7 +540,6 @@ Machine::OneInstruction()
 	break;
     	
       case OP_SYSCALL:
-	delete instr;
 	RaiseException(SyscallException, 0);
 	return; 
 	
@@ -568,7 +571,6 @@ Machine::OneInstruction()
     registers[PCReg] = registers[NextPCReg];
     registers[NextPCReg] = pcAfter;
 
-    delete instr;
 
 }
 

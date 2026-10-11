@@ -136,11 +136,20 @@ ThreadRoot:
         mov    %rsp,%rbp
         push   %rdi
         push   %rsi
+        # El ABI de x86-64 pide rsp multiplo de 16 justo antes de cada call.
+        # Como se entra aqui con rsp alineado (SWITCH hace ret a ThreadRoot sin
+        # pasar por un call), los tres push dejan la pila corrida 8 bytes para
+        # la primera y la tercera llamada.  Se corrige con sub/add de 8: sin
+        # esto ThreadFinish corria desalineado y cualquier funcion con SSE
+        # (el operator delete de valgrind, por ejemplo) reventaba.
+        sub    $8,%rsp
         callq  *%rax		# StartupPC ()
+        add    $8,%rsp
         mov    %rbx,%rdi
         pop    %rsi
         callq  *%rsi		# InitialPC (InitialArg)
         pop    %rsi
+        sub    $8,%rsp
         callq  *%rsi		# WhenDonePC ()
 
         # NOT REACHED

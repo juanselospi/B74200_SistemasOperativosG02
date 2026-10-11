@@ -28,684 +28,902 @@
 #include "system.h"
 #include "syscall.h"
 
-#include "nachostabla.h"
-#include <fcntl.h>
+#define SC_NachOS	12345
+
+// OJO: el archivo fuente es Exception.cc (con mayuscula).  La regla
+// "make depend" genera exception.cc a partir de este con un sed que
+// reemplaza el 12345 de arriba.  Los cambios hechos en exception.cc se
+// pierden en el siguiente "make depend".
+
+#include "synch.h"
+#include "tablaarchivos.h"
+#include "tablaprocesos.h"
 #include <unistd.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <string.h>
 
-#include "addrspace.h"
-#include "filesys.h"
-#include "synch.h"
-#include "bitmap.h"
+// Mientras un hilo escribe en la consola otro no deberia meterse en
+// medio, si no las salidas se mezclan letra por letra
+static Lock * candadoConsola = new Lock( "consola" );
 
-#define SC_NachOS	12345
+//----------------------------------------------------------------------
+// returnFromSystemCall
+//	Avanza los tres contadores de programa de MIPS.  Si no se hace, al
+//	volver de la excepcion se vuelve a ejecutar la misma instruccion
+//	syscall y el programa se queda en un ciclo infinito.
+//----------------------------------------------------------------------
 
-#define MAX_PROCESSES 32
-#define MAX_USER_SEM 64
-#define MAX_USER_LOCK 64
-#define MAX_USER_COND 64
-#define MAX_SOCKETS 64
+static void returnFromSystemCall() {
+    int pc = machine->ReadRegister( PCReg );
+    int siguiente = machine->ReadRegister( NextPCReg );
 
-NachosOpenFilesTable * nachosFileTable = NULL;
-
-static Semaphore * consoleWriteSem = NULL;
-static Semaphore * consoleReadSem = NULL;
-
-static void InitConsoleSemaphores() {
-   if(consoleWriteSem == NULL) {
-      consoleWriteSem = new Semaphore("console write", 1);
-      consoleReadSem = new Semaphore("console read", 1);
-   }
-}
-
-class UserProcess {
-  public:
-   UserProcess() {
-      thread = NULL;
-      joinSem = NULL;
-      exitStatus = 0;
-      exited = false;
-   }
-   Thread *thread;
-   Semaphore *joinSem;
-   int exitStatus;
-   bool exited;
-};
-
-static UserProcess *processTable[MAX_PROCESSES];
-static BitMap *processMap = NULL;
-static Semaphore *userSems[MAX_USER_SEM];
-static Lock *userLocks[MAX_USER_LOCK];
-static Condition *userConds[MAX_USER_COND];
-static BitMap *semMap = NULL;
-static BitMap *lockMap = NULL;
-static BitMap *condMap = NULL;
-static int socketHandles[MAX_SOCKETS];
-static BitMap *socketMap = NULL;
-
-static int OpenSocketHandle(int unixFd) {
-   if(socketMap == NULL) {
-      socketMap = new BitMap(MAX_SOCKETS);
-      for(int i = 0; i < MAX_SOCKETS; i++)
-         socketHandles[i] = -1;
-   }
-   int id = socketMap->Find();
-   if(id == -1) {
-      close(unixFd);
-      return -1;
-   }
-   socketHandles[id] = unixFd;
-   return id;
-}
-
-static int GetUnixSocket(int id) {
-   if(socketMap == NULL || id < 0 || !socketMap->Test(id))
-      return -1;
-   return socketHandles[id];
-}
-
-static int CloseSocketHandle(int id) {
-   if(socketMap == NULL || id < 0 || !socketMap->Test(id))
-      return -1;
-   int fd = socketHandles[id];
-   socketMap->Clear(id);
-   socketHandles[id] = -1;
-   return fd;
-}
-
-static void InitProcessTable() {
-   if(processMap == NULL) {
-      processMap = new BitMap(MAX_PROCESSES);
-      for(int i = 0; i < MAX_PROCESSES; i++)
-         processTable[i] = NULL;
-   }
-}
-
-static void ReadUserString(int userAddr, char *buf, int maxSize) {
-   int i = 0;
-   int val = 0;
-   do {
-      machine->ReadMem(userAddr + i, 1, &val);
-      buf[i] = (char)val;
-      i++;
-   } while(val != 0 && i < maxSize - 1);
-   buf[i] = '\0';
-}
-
-static void WriteUserBuffer(int userAddr, const char *buf, int size) {
-   for(int i = 0; i < size; i++)
-      machine->WriteMem(userAddr + i, 1, (int)buf[i]);
-}
-
-static void ReleaseFileTable() {
-   if(nachosFileTable != NULL) {
-      nachosFileTable->delThread();
-      if(nachosFileTable->getUsage() <= 0) {
-         delete nachosFileTable;
-         nachosFileTable = NULL;
-      }
-   }
-}
-
-static void MarkProcessExited(int status) {
-   InitProcessTable();
-   for(int i = 0; i < MAX_PROCESSES; i++) {
-      if(processMap->Test(i) && processTable[i] != NULL
-         && processTable[i]->thread == currentThread) {
-         processTable[i]->exitStatus = status;
-         processTable[i]->exited = true;
-         processTable[i]->joinSem->V();
-         break;
-      }
-   }
-}
-
-struct ExecParams {
-   int procId;
-   char filename[256];
-};
-
-static void ExecProcess(void *arg) {
-   ExecParams *params = (ExecParams *)arg;
-   int procId = params->procId;
-   char filename[256];
-   strncpy(filename, params->filename, sizeof(filename) - 1);
-   filename[sizeof(filename) - 1] = '\0';
-   delete params;
-
-   OpenFile *executable = fileSystem->Open(filename);
-   if(executable == NULL) {
-      processTable[procId]->exitStatus = -1;
-      processTable[procId]->exited = true;
-      processTable[procId]->joinSem->V();
-      currentThread->Finish();
-      return;
-   }
-
-   AddrSpace *space = new AddrSpace(executable);
-   delete executable;
-   currentThread->space = space;
-   nachosFileTable = new NachosOpenFilesTable();
-   nachosFileTable->addThread();
-
-   space->InitRegisters();
-   space->RestoreState();
-   machine->Run();
-   ASSERT(false);
-}
-
-static void NachosForkThread(void *arg) {
-   int func = (int)(long)arg;
-   AddrSpace *space = currentThread->space;
-   space->InitRegistersForFork(func);
-   space->RestoreState();
-   machine->Run();
-   ASSERT(false);
-}
-
-void returnFromSystemCall() {
-   machine->WriteRegister(PrevPCReg, machine->ReadRegister(PCReg));
-   machine->WriteRegister(PCReg, machine->ReadRegister(NextPCReg));
-   machine->WriteRegister(NextPCReg, machine->ReadRegister(NextPCReg) + 4);
-}
-
-void NachOS_Halt() {
-   DEBUG('a', "Shutdown, initiated by user program.\n");
-   interrupt->Halt();
-}
-
-void NachOS_Exit() {
-   int status = machine->ReadRegister(4);
-   DEBUG('a', "Exit, called with status %d\n", status);
-   MarkProcessExited(status);
-   if(currentThread->space != NULL) {
-      currentThread->space->RemoveThread();
-      if(currentThread->space->CanDelete())
-         delete currentThread->space;
-      currentThread->space = NULL;
-   }
-   ReleaseFileTable();
-   currentThread->Finish();
-}
-
-
-void NachOS_Exec() {
-   char name[256];
-   ReadUserString(machine->ReadRegister(4), name, sizeof(name));
-   InitProcessTable();
-   int procId = processMap->Find();
-   if(procId == -1) {
-      machine->WriteRegister(2, -1);
-      returnFromSystemCall();
-      return;
-   }
-   processTable[procId] = new UserProcess();
-   processTable[procId]->joinSem = new Semaphore("join", 0);
-   processTable[procId]->exited = false;
-   ExecParams *params = new ExecParams();
-   params->procId = procId;
-   strncpy(params->filename, name, sizeof(params->filename) - 1);
-   params->filename[sizeof(params->filename) - 1] = '\0';
-   Thread *t = new Thread("Exec");
-   processTable[procId]->thread = t;
-   t->Fork(ExecProcess, params);
-   machine->WriteRegister(2, procId);
-   returnFromSystemCall();
-}
-
-void NachOS_Join() {
-   int procId = machine->ReadRegister(4);
-   InitProcessTable();
-   if(procId < 0 || !processMap->Test(procId) || processTable[procId] == NULL) {
-      machine->WriteRegister(2, -1);
-      returnFromSystemCall();
-      return;
-   }
-   if(!processTable[procId]->exited)
-      processTable[procId]->joinSem->P();
-   int status = processTable[procId]->exitStatus;
-   delete processTable[procId]->joinSem;
-   delete processTable[procId];
-   processTable[procId] = NULL;
-   processMap->Clear(procId);
-   machine->WriteRegister(2, status);
-   returnFromSystemCall();
-}
-
-void NachOS_Create() {
-   char name[256];
-   ReadUserString(machine->ReadRegister(4), name, sizeof(name));
-   bool good = fileSystem->Create(name, 0);
-   machine->WriteRegister(2, good ? 0 : -1);
-   returnFromSystemCall();
-}
-
-void NachOS_Open() {
-   char name[256];
-   ReadUserString(machine->ReadRegister(4), name, sizeof(name));
-   if(nachosFileTable == NULL) {
-      nachosFileTable = new NachosOpenFilesTable();
-      nachosFileTable->addThread();
-   }
-   int UnixHandle = open(name, O_RDWR);
-   if(UnixHandle == -1)
-      UnixHandle = open(name, O_RDONLY);
-   if(UnixHandle == -1)
-      machine->WriteRegister(2, -1);
-   else
-      machine->WriteRegister(2, nachosFileTable->Open(UnixHandle));
-   returnFromSystemCall();
-}
-
-void NachOS_Write() {
-   int bufAddr = machine->ReadRegister(4);
-   int size = machine->ReadRegister(5);
-   OpenFileId descriptor = machine->ReadRegister(6);
-   char *buffer = new char[size + 1];
-   int val = 0;
-   for(int i = 0; i < size; i++) {
-      machine->ReadMem(bufAddr + i, 1, &val);
-      buffer[i] = (char)val;
-   }
-   buffer[size] = '\0';
-   switch(descriptor) {
-      case ConsoleInput:
-         machine->WriteRegister(2, -1);
-         break;
-      case ConsoleOutput:
-         InitConsoleSemaphores();
-         consoleWriteSem->P();
-         printf("%s", buffer);
-         stats->numConsoleCharsWritten += size;
-         consoleWriteSem->V();
-         machine->WriteRegister(2, size);
-         break;
-      case ConsoleError:
-         InitConsoleSemaphores();
-         consoleWriteSem->P();
-         printf("%d\n", machine->ReadRegister(4));
-         stats->numConsoleCharsWritten += size;
-         consoleWriteSem->V();
-         machine->WriteRegister(2, size);
-         break;
-      default:
-         if(nachosFileTable == NULL || !nachosFileTable->isOpened(descriptor))
-            machine->WriteRegister(2, -1);
-         else {
-            int UnixHandle = nachosFileTable->getUnixHandle(descriptor);
-            machine->WriteRegister(2, write(UnixHandle, buffer, size));
-         }
-         break;
-   }
-   delete[] buffer;
-   returnFromSystemCall();
-}
-
-void NachOS_Read() {
-   int bufAddr = machine->ReadRegister(4);
-   int size = machine->ReadRegister(5);
-   OpenFileId descriptor = machine->ReadRegister(6);
-   switch(descriptor) {
-      case ConsoleInput: {
-         InitConsoleSemaphores();
-         int bytesRead = 0;
-         while(bytesRead < size) {
-            char c;
-            int n;
-            consoleReadSem->P();
-            do { n = read(0, &c, 1); } while(n <= 0);
-            stats->numConsoleCharsRead++;
-            consoleReadSem->V();
-            machine->WriteMem(bufAddr + bytesRead, 1, (int)c);
-            bytesRead++;
-         }
-         machine->WriteRegister(2, bytesRead);
-         break;
-      }
-      case ConsoleOutput:
-      case ConsoleError:
-         machine->WriteRegister(2, -1);
-         break;
-      default:
-         if(nachosFileTable == NULL || !nachosFileTable->isOpened(descriptor)) {
-            machine->WriteRegister(2, -1);
-         } else {
-            char *buffer = new char[size];
-            int UnixHandle = nachosFileTable->getUnixHandle(descriptor);
-            int bytesRead = read(UnixHandle, buffer, size);
-            if(bytesRead > 0)
-               WriteUserBuffer(bufAddr, buffer, bytesRead);
-            delete[] buffer;
-            machine->WriteRegister(2, bytesRead);
-         }
-         break;
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_Close() {
-   OpenFileId descriptor = machine->ReadRegister(4);
-   if(descriptor >= ConsoleInput && descriptor <= ConsoleError) {
-      machine->WriteRegister(2, 0);
-      returnFromSystemCall();
-      return;
-   }
-   if(nachosFileTable == NULL || !nachosFileTable->isOpened(descriptor))
-      machine->WriteRegister(2, -1);
-   else {
-      int UnixHandle = nachosFileTable->Close(descriptor);
-      close(UnixHandle);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_Fork() {
-   int func = machine->ReadRegister(4);
-   Thread *newT = new Thread("child to execute fork code");
-   if(nachosFileTable != NULL)
-      nachosFileTable->addThread();
-   newT->space = new AddrSpace(currentThread->space);
-   newT->Fork(NachosForkThread, (void *)(long)func);
-   returnFromSystemCall();
-}
-
-void NachOS_Yield() {
-   currentThread->Yield();
-   returnFromSystemCall();
-}
-
-
-void NachOS_SemCreate() {
-   int initVal = machine->ReadRegister(4);
-   if(semMap == NULL) {
-      semMap = new BitMap(MAX_USER_SEM);
-      for(int i = 0; i < MAX_USER_SEM; i++) userSems[i] = NULL;
-   }
-   int id = semMap->Find();
-   if(id == -1) machine->WriteRegister(2, -1);
-   else {
-      userSems[id] = new Semaphore("semUser", initVal);
-      machine->WriteRegister(2, id);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_SemDestroy() {
-   int id = machine->ReadRegister(4);
-   if(semMap == NULL || id < 0 || !semMap->Test(id) || userSems[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userSems[id]->Destroy();
-      delete userSems[id];
-      userSems[id] = NULL;
-      semMap->Clear(id);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_SemSignal() {
-   int id = machine->ReadRegister(4);
-   if(semMap == NULL || id < 0 || !semMap->Test(id) || userSems[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userSems[id]->V();
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_SemWait() {
-   int id = machine->ReadRegister(4);
-   if(semMap == NULL || id < 0 || !semMap->Test(id) || userSems[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userSems[id]->P();
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_LockCreate() {
-   if(lockMap == NULL) {
-      lockMap = new BitMap(MAX_USER_LOCK);
-      for(int i = 0; i < MAX_USER_LOCK; i++) userLocks[i] = NULL;
-   }
-   int id = lockMap->Find();
-   if(id == -1) machine->WriteRegister(2, -1);
-   else {
-      userLocks[id] = new Lock("lockUser");
-      machine->WriteRegister(2, id);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_LockDestroy() {
-   int id = machine->ReadRegister(4);
-   if(lockMap == NULL || id < 0 || !lockMap->Test(id) || userLocks[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      delete userLocks[id];
-      userLocks[id] = NULL;
-      lockMap->Clear(id);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_LockAcquire() {
-   int id = machine->ReadRegister(4);
-   if(lockMap == NULL || id < 0 || !lockMap->Test(id) || userLocks[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userLocks[id]->Acquire();
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_LockRelease() {
-   int id = machine->ReadRegister(4);
-   if(lockMap == NULL || id < 0 || !lockMap->Test(id) || userLocks[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userLocks[id]->Release();
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_CondCreate() {
-   if(condMap == NULL) {
-      condMap = new BitMap(MAX_USER_COND);
-      for(int i = 0; i < MAX_USER_COND; i++) userConds[i] = NULL;
-   }
-   int id = condMap->Find();
-   if(id == -1) machine->WriteRegister(2, -1);
-   else {
-      userConds[id] = new Condition("userCond");
-      machine->WriteRegister(2, id);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_CondDestroy() {
-   int id = machine->ReadRegister(4);
-   if(condMap == NULL || id < 0 || !condMap->Test(id) || userConds[id] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      delete userConds[id];
-      userConds[id] = NULL;
-      condMap->Clear(id);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_CondSignal() {
-   int condId = machine->ReadRegister(4);
-   int lockId = machine->ReadRegister(5);
-   if(condMap == NULL || lockMap == NULL || condId < 0 || !condMap->Test(condId)
-      || userConds[condId] == NULL || lockId < 0 || !lockMap->Test(lockId)
-      || userLocks[lockId] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userConds[condId]->Signal(userLocks[lockId]);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_CondWait() {
-   int condId = machine->ReadRegister(4);
-   int lockId = machine->ReadRegister(5);
-   if(condMap == NULL || lockMap == NULL || condId < 0 || !condMap->Test(condId)
-      || userConds[condId] == NULL || lockId < 0 || !lockMap->Test(lockId)
-      || userLocks[lockId] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userConds[condId]->Wait(userLocks[lockId]);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_CondBroadcast() {
-   int condId = machine->ReadRegister(4);
-   int lockId = machine->ReadRegister(5);
-   if(condMap == NULL || lockMap == NULL || condId < 0 || !condMap->Test(condId)
-      || userConds[condId] == NULL || lockId < 0 || !lockMap->Test(lockId)
-      || userLocks[lockId] == NULL)
-      machine->WriteRegister(2, -1);
-   else {
-      userConds[condId]->Broadcast(userLocks[lockId]);
-      machine->WriteRegister(2, 0);
-   }
-   returnFromSystemCall();
-}
-
-void NachOS_Socket() {
-   int family = machine->ReadRegister(4);
-   int type = machine->ReadRegister(5);
-   int af = (family == AF_INET6_NachOS) ? AF_INET6 : AF_INET;
-   int st = (type == SOCK_DGRAM_NachOS) ? SOCK_DGRAM : SOCK_STREAM;
-   int unixFd = socket(af, st, 0);
-   if(unixFd < 0) machine->WriteRegister(2, -1);
-   else machine->WriteRegister(2, OpenSocketHandle(unixFd));
-   returnFromSystemCall();
-}
-
-void NachOS_Connect() {
-   int sockId = machine->ReadRegister(4);
-   char ip[256];
-   ReadUserString(machine->ReadRegister(5), ip, sizeof(ip));
-   int port = machine->ReadRegister(6);
-   int unixFd = GetUnixSocket(sockId);
-   if(unixFd < 0) {
-      machine->WriteRegister(2, -1);
-      returnFromSystemCall();
-      return;
-   }
-   struct sockaddr_in addr;
-   memset(&addr, 0, sizeof(addr));
-   addr.sin_family = AF_INET;
-   addr.sin_port = htons((unsigned short)port);
-   if(inet_pton(AF_INET, ip, &addr.sin_addr) <= 0)
-      addr.sin_addr.s_addr = inet_addr(ip);
-   machine->WriteRegister(2, connect(unixFd, (struct sockaddr *)&addr, sizeof(addr)));
-   returnFromSystemCall();
-}
-
-void NachOS_Bind() {
-   int sockId = machine->ReadRegister(4);
-   int port = machine->ReadRegister(5);
-   int unixFd = GetUnixSocket(sockId);
-   if(unixFd < 0) {
-      machine->WriteRegister(2, -1);
-      returnFromSystemCall();
-      return;
-   }
-   struct sockaddr_in addr;
-   memset(&addr, 0, sizeof(addr));
-   addr.sin_family = AF_INET;
-   addr.sin_addr.s_addr = INADDR_ANY;
-   addr.sin_port = htons((unsigned short)port);
-   machine->WriteRegister(2, bind(unixFd, (struct sockaddr *)&addr, sizeof(addr)));
-   returnFromSystemCall();
-}
-
-void NachOS_Listen() {
-   int sockId = machine->ReadRegister(4);
-   int backlog = machine->ReadRegister(5);
-   int unixFd = GetUnixSocket(sockId);
-   if(unixFd < 0) machine->WriteRegister(2, -1);
-   else machine->WriteRegister(2, listen(unixFd, backlog));
-   returnFromSystemCall();
-}
-
-void NachOS_Accept() {
-   int sockId = machine->ReadRegister(4);
-   int unixFd = GetUnixSocket(sockId);
-   if(unixFd < 0) {
-      machine->WriteRegister(2, -1);
-      returnFromSystemCall();
-      return;
-   }
-   struct sockaddr_in addr;
-   socklen_t len = sizeof(addr);
-   int newFd = accept(unixFd, (struct sockaddr *)&addr, &len);
-   if(newFd < 0) machine->WriteRegister(2, -1);
-   else machine->WriteRegister(2, OpenSocketHandle(newFd));
-   returnFromSystemCall();
-}
-
-void NachOS_Shutdown() {
-   int sockId = machine->ReadRegister(4);
-   int mode = machine->ReadRegister(5);
-   int how = SHUT_RDWR;
-   if(mode == 0) how = SHUT_RD;
-   else if(mode == 1) how = SHUT_WR;
-   int unixFd = CloseSocketHandle(sockId);
-   if(unixFd < 0) machine->WriteRegister(2, -1);
-   else {
-      machine->WriteRegister(2, shutdown(unixFd, how));
-      close(unixFd);
-   }
-   returnFromSystemCall();
+    machine->WriteRegister( PrevPCReg, pc );
+    machine->WriteRegister( PCReg, siguiente );
+    machine->WriteRegister( NextPCReg, siguiente + 4 );
 }
 
 
 //----------------------------------------------------------------------
-// ExceptionHandler
-// 	Entry point into the Nachos kernel.  Called when a user program
-//	is executing, and either does a syscall, or generates an addressing
-//	or arithmetic exception.
-//
-// 	For system calls, the following is the calling convention:
-//
-// 	system call code -- r2
-//		arg1 -- r4
-//		arg2 -- r5
-//		arg3 -- r6
-//		arg4 -- r7
-//
-//	The result of the system call, if any, must be put back into r2. 
-//
-// And don't forget to increment the pc before returning. (Or else you'll
-// loop making the same system call forever!
-//
-//	"which" is the kind of exception.  The list of possible exceptions 
-//	are in machine.h.
+// Acceso a la memoria del programa de usuario
+//	Los parametros que son punteros (cadenas, buffers) traen una
+//	direccion virtual del proceso; hay que pasar por ReadMem/WriteMem
+//	para que la traduzca la tabla de paginas.  ReadMem solo lee
+//	enteros, asi que se va byte por byte.
 //----------------------------------------------------------------------
+
+// Bajo VM, ReadMem/WriteMem devuelven false la primera vez que tocan una
+// pagina que no esta en memoria: la excepcion ya la trajo, asi que basta
+// con reintentar.  Si la direccion es invalida de verdad, el manejador
+// mata al proceso y nunca regresa aqui; el tope es solo por seguridad.
+#define ReintentosMemoria 3
+
+static bool leerByteUsuario( int direccion, int * valor ) {
+    for ( int intento = 0; intento < ReintentosMemoria; intento++ ) {
+        if ( machine->ReadMem( direccion, 1, valor ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool escribirByteUsuario( int direccion, int valor ) {
+    for ( int intento = 0; intento < ReintentosMemoria; intento++ ) {
+        if ( machine->WriteMem( direccion, 1, valor ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void leerMemoriaUsuario( int direccion, int cuantos, char * destino ) {
+    int valor;
+    for ( int i = 0; i < cuantos; i++ ) {
+        leerByteUsuario( direccion + i, &valor );
+        destino[ i ] = (char) valor;
+    }
+}
+
+// Copia hasta encontrar el 0 final o llenar "maximo - 1"; siempre deja
+// la cadena terminada en 0
+static void leerCadenaUsuario( int direccion, char * destino, int maximo ) {
+    int valor;
+    int i = 0;
+    do {
+        leerByteUsuario( direccion + i, &valor );
+        destino[ i ] = (char) valor;
+        i++;
+    } while ( valor != 0 && i < maximo - 1 );
+    destino[ i ] = 0;
+}
+
+static void escribirMemoriaUsuario( int direccion, int cuantos, const char * origen ) {
+    for ( int i = 0; i < cuantos; i++ ) {
+        escribirByteUsuario( direccion + i, origen[ i ] );
+    }
+}
+
+
+/*
+ *  System call interface: Halt()
+ */
+void NachOS_Halt() {		// System call 0
+
+	DEBUG('a', "Shutdown, initiated by user program.\n");
+   	interrupt->Halt();
+
+}
+
+
+/*
+ *  System call interface: void Exit( int )
+ *
+ *  Libera lo que el hilo tenia: su espacio de direcciones (los marcos
+ *  compartidos con otros hilos del Fork solo se van con el ultimo), la
+ *  tabla de archivos si es el ultimo que la usa, y si era el hilo
+ *  principal del proceso avisa a quien este en Join con el estado.
+ */
+static void terminarHiloActual( int estado ) {
+    DEBUG( 'u', "Exit con estado %d del hilo %s\n", estado, currentThread->getName() );
+
+    if ( currentThread->esHiloPrincipal ) {
+        tablaProcesos->termino( currentThread->idProceso, estado );
+    }
+
+    // El destructor de Thread tambien borra space; se deja en NULL para
+    // que no lo borre dos veces
+    delete currentThread->space;
+    currentThread->space = NULL;
+
+    // La tabla de archivos es compartida: solo el ultimo hilo que la usa
+    // cierra lo que quedo abierto y la borra
+    if ( currentThread->archivos != NULL ) {
+        if ( currentThread->archivos->quitarHilo() == 0 ) {
+            currentThread->archivos->cerrarTodo();
+            delete currentThread->archivos;
+        }
+        currentThread->archivos = NULL;
+    }
+
+    currentThread->Finish();
+}
+
+void NachOS_Exit() {		// System call 1
+    terminarHiloActual( machine->ReadRegister( 4 ) );
+}
+
+
+//----------------------------------------------------------------------
+// arrancarProceso
+//	Lo primero que corre el hilo de kernel de un Exec: igual que
+//	StartProcess pero el espacio ya viene cargado.
+//----------------------------------------------------------------------
+
+static void arrancarProceso( void * nada ) {
+    currentThread->space->InitRegisters();
+    currentThread->space->RestoreState();
+    machine->Run();
+    ASSERT( false );		// Run no regresa, el programa sale con Exit
+}
+
+
+/*
+ *  System call interface: SpaceId Exec( char * )
+ *
+ *  Carga el ejecutable en un espacio nuevo y lo pone a correr en un hilo
+ *  de kernel nuevo.  Devuelve el SpaceId para Join, o -1 si el archivo
+ *  no existe, no cabe en memoria o la tabla de procesos esta llena.
+ */
+void NachOS_Exec() {		// System call 2
+    char nombre[ 256 ];
+    leerCadenaUsuario( machine->ReadRegister( 4 ), nombre, sizeof( nombre ) );
+    DEBUG( 'u', "Exec %s\n", nombre );
+
+    OpenFile * ejecutable = fileSystem->Open( nombre );
+    if ( ejecutable == NULL ) {
+        DEBUG( 'u', "Exec: no existe %s\n", nombre );
+        machine->WriteRegister( 2, -1 );
+        returnFromSystemCall();
+        return;
+    }
+
+    // El AddrSpace se queda con el archivo y lo cierra en su destructor
+    AddrSpace * espacio = new AddrSpace( ejecutable );
+    if ( !espacio->cargadoBien() ) {
+        DEBUG( 'u', "Exec: no hay memoria para %s\n", nombre );
+        delete espacio;
+        machine->WriteRegister( 2, -1 );
+        returnFromSystemCall();
+        return;
+    }
+
+    int id = tablaProcesos->registrar( nombre );
+    if ( id == -1 ) {
+        delete espacio;
+        machine->WriteRegister( 2, -1 );
+        returnFromSystemCall();
+        return;
+    }
+
+    // El nombre del hilo apunta a la copia que guarda la tabla de procesos
+    Thread * hilo = new Thread( tablaProcesos->nombre( id ) );
+    hilo->space = espacio;
+    hilo->archivos = new TablaArchivos();
+    hilo->archivos->agregarHilo();
+    hilo->idProceso = id;
+    hilo->esHiloPrincipal = true;
+
+    hilo->Fork( arrancarProceso, NULL );
+
+    machine->WriteRegister( 2, id );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Join( SpaceId )
+ *
+ *  Se duerme hasta que el proceso termine y devuelve su estado de Exit;
+ *  -1 si el id no existe o es el propio.
+ */
+void NachOS_Join() {		// System call 3
+    int id = machine->ReadRegister( 4 );
+    DEBUG( 'u', "Join %d\n", id );
+
+    if ( id == currentThread->idProceso || !tablaProcesos->existe( id ) ) {
+        machine->WriteRegister( 2, -1 );
+    } else {
+        int estado = tablaProcesos->esperar( id );
+        machine->WriteRegister( 2, estado );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: void Create( char * )
+ *
+ *  Crea el archivo vacio (en Unix, porque estamos con FILESYS_STUB).
+ *  No lo deja abierto, el usuario hace Open despues.
+ */
+void NachOS_Create() {		// System call 4
+    char nombre[ 256 ];
+    leerCadenaUsuario( machine->ReadRegister( 4 ), nombre, sizeof( nombre ) );
+    DEBUG( 'u', "Create %s\n", nombre );
+
+    if ( fileSystem->Create( nombre, 0 ) ) {
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: OpenFileId Open( char * )
+ *
+ *  Abre en Unix para lectura y escritura y registra el descriptor en la
+ *  tabla del proceso.  Devuelve el id de NachOS o -1.
+ */
+void NachOS_Open() {		// System call 5
+    char nombre[ 256 ];
+    leerCadenaUsuario( machine->ReadRegister( 4 ), nombre, sizeof( nombre ) );
+    DEBUG( 'u', "Open %s\n", nombre );
+
+    int descriptor = OpenForReadWrite( nombre, false );
+    if ( descriptor == -1 ) {
+        machine->WriteRegister( 2, -1 );
+    } else {
+        int id = currentThread->archivos->abrir( descriptor, RECURSO_ARCHIVO );
+        if ( id == -1 ) {		// tabla llena
+            close( descriptor );
+        }
+        machine->WriteRegister( 2, id );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: void Write( char *, int, OpenFileId )
+ *
+ *  r4 = direccion del buffer en el usuario, r5 = cuantos bytes, r6 = archivo
+ */
+void NachOS_Write() {		// System call 7
+    int direccion = machine->ReadRegister( 4 );
+    int tamanno = machine->ReadRegister( 5 );
+    OpenFileId archivo = machine->ReadRegister( 6 );
+    DEBUG( 'u', "Write %d bytes al id %d\n", tamanno, archivo );
+
+    if ( tamanno < 0 ) {
+        tamanno = 0;
+    }
+    char * buffer = new char[ tamanno + 1 ];
+    leerMemoriaUsuario( direccion, tamanno, buffer );
+    // El 0 que cierra la cadena va antes del switch para que sirva en
+    // todos los casos, no solo en el de la consola
+    buffer[ tamanno ] = 0;
+
+    candadoConsola->Acquire();
+    switch ( archivo ) {
+        case ConsoleInput:	// nadie escribe en la entrada estandar
+            machine->WriteRegister( 2, -1 );
+            break;
+        case ConsoleOutput:
+            printf( "%s", buffer );
+            fflush( stdout );
+            machine->WriteRegister( 2, tamanno );
+            break;
+        case ConsoleError:	// truco de la asistencia para sacar enteros
+            printf( "%d\n", machine->ReadRegister( 4 ) );
+            machine->WriteRegister( 2, tamanno );
+            break;
+        default: {		// archivos y sockets abiertos, segun la tabla
+            if ( currentThread->archivos->estaAbierto( archivo ) ) {
+                // write() sirve igual para archivo o socket; el tipo queda en
+                // la tabla para quien lo necesite (Close, imprimir)
+                int escritos = write( currentThread->archivos->descriptorUnix( archivo ),
+                                      buffer, tamanno );
+                machine->WriteRegister( 2, escritos );
+            } else {
+                machine->WriteRegister( 2, -1 );
+            }
+            break;
+        }
+    }
+    candadoConsola->Release();
+
+    delete [] buffer;
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Read( char *, int, OpenFileId )
+ *
+ *  r4 = buffer del usuario, r5 = cuantos bytes, r6 = archivo.
+ *  Devuelve los bytes leidos (0 en fin de archivo) o -1.
+ */
+void NachOS_Read() {		// System call 6
+    int direccion = machine->ReadRegister( 4 );
+    int tamanno = machine->ReadRegister( 5 );
+    OpenFileId archivo = machine->ReadRegister( 6 );
+    int leidos = -1;
+    DEBUG( 'u', "Read %d bytes del id %d\n", tamanno, archivo );
+
+    if ( tamanno < 0 ) {
+        tamanno = 0;
+    }
+    char * buffer = new char[ tamanno + 1 ];
+
+    switch ( archivo ) {
+        case ConsoleInput:	// entrada estandar de Unix
+            leidos = read( 0, buffer, tamanno );
+            break;
+        case ConsoleOutput:	// de la salida no se lee
+        case ConsoleError:
+            leidos = -1;
+            break;
+        default:
+            if ( currentThread->archivos->estaAbierto( archivo ) ) {
+                leidos = read( currentThread->archivos->descriptorUnix( archivo ),
+                               buffer, tamanno );
+            }
+            break;
+    }
+
+    if ( leidos > 0 ) {
+        escribirMemoriaUsuario( direccion, leidos, buffer );
+    }
+    machine->WriteRegister( 2, leidos );
+
+    delete [] buffer;
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: void Close( OpenFileId )
+ */
+void NachOS_Close() {		// System call 8
+    OpenFileId archivo = machine->ReadRegister( 4 );
+    DEBUG( 'u', "Close id %d\n", archivo );
+
+    if ( currentThread->archivos->estaAbierto( archivo ) ) {
+        close( currentThread->archivos->descriptorUnix( archivo ) );
+        currentThread->archivos->cerrar( archivo );
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+//----------------------------------------------------------------------
+// arrancarHilo
+//	Primer codigo del hilo de kernel que atiende un Fork de usuario.
+//	"p" trae la direccion de la rutina de usuario.  La direccion de
+//	retorno se pone en 4: ahi esta el "jal Exit" de start.s, asi cuando
+//	la rutina termina el hilo hace Exit(0) solo.
+//----------------------------------------------------------------------
+
+static void arrancarHilo( void * p ) {
+    currentThread->space->InitRegisters();	// pila nueva, registros en cero
+    currentThread->space->RestoreState();
+
+    machine->WriteRegister( RetAddrReg, 4 );
+    machine->WriteRegister( PCReg, (long) p );
+    machine->WriteRegister( NextPCReg, (long) p + 4 );
+
+    machine->Run();
+    ASSERT( false );
+}
+
+
+/*
+ *  System call interface: void Fork( void (*func)() )
+ *
+ *  Hilo nuevo dentro del mismo proceso: comparte codigo, datos y tabla
+ *  de archivos con el que llama, pero tiene su propia pila.
+ */
+void NachOS_Fork() {		// System call 9
+    long rutina = machine->ReadRegister( 4 );
+    DEBUG( 'u', "Fork a la direccion %ld\n", rutina );
+
+    AddrSpace * espacio = new AddrSpace( currentThread->space );
+    if ( !espacio->cargadoBien() ) {
+        DEBUG( 'u', "Fork: sin memoria para la pila del hilo nuevo\n" );
+        delete espacio;
+        returnFromSystemCall();
+        return;
+    }
+
+    Thread * hilo = new Thread( "hilo de Fork" );
+    hilo->space = espacio;
+    hilo->archivos = currentThread->archivos;
+    hilo->archivos->agregarHilo();
+    hilo->idProceso = currentThread->idProceso;
+    hilo->esHiloPrincipal = false;
+
+    hilo->Fork( arrancarHilo, (void *) rutina );
+
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: void Yield()
+ */
+void NachOS_Yield() {		// System call 10
+    DEBUG( 'u', "Yield\n" );
+    returnFromSystemCall();
+    currentThread->Yield();
+}
+
+
+//----------------------------------------------------------------------
+// Sincronizacion para programas de usuario
+//	Los semaforos, locks y condiciones de usuario son objetos del
+//	kernel guardados en tres arreglos chicos; el usuario solo ve el
+//	indice.  Son globales a todo NachOS, no por proceso, igual que
+//	los ids que define syscall.h (enteros sin dueno).
+//----------------------------------------------------------------------
+
+#define MaxObjetosSincro 32
+
+static Semaphore * semaforosUsuario[ MaxObjetosSincro ];
+static Lock * locksUsuario[ MaxObjetosSincro ];
+static Condition * condicionesUsuario[ MaxObjetosSincro ];
+
+static bool idSincroValido( int id ) {
+    return id >= 0 && id < MaxObjetosSincro;
+}
+
+// Busca un hueco en el arreglo que se le pase (todos son de punteros)
+template <class T>
+static int buscarHueco( T * arreglo[] ) {
+    for ( int i = 0; i < MaxObjetosSincro; i++ ) {
+        if ( arreglo[ i ] == NULL ) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+
+/*
+ *  System call interface: Sem_t SemCreate( int )
+ */
+void NachOS_SemCreate() {		// System call 11
+    int valorInicial = machine->ReadRegister( 4 );
+    int id = buscarHueco( semaforosUsuario );
+    DEBUG( 'u', "SemCreate(%d) -> %d\n", valorInicial, id );
+
+    if ( id != -1 ) {
+        semaforosUsuario[ id ] = new Semaphore( "semaforo de usuario", valorInicial );
+    }
+    machine->WriteRegister( 2, id );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int SemDestroy( Sem_t )
+ */
+void NachOS_SemDestroy() {		// System call 12
+    int id = machine->ReadRegister( 4 );
+    DEBUG( 'u', "SemDestroy(%d)\n", id );
+
+    if ( idSincroValido( id ) && semaforosUsuario[ id ] != NULL ) {
+        delete semaforosUsuario[ id ];
+        semaforosUsuario[ id ] = NULL;
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int SemSignal( Sem_t )
+ */
+void NachOS_SemSignal() {		// System call 13
+    int id = machine->ReadRegister( 4 );
+    DEBUG( 'u', "SemSignal(%d)\n", id );
+
+    if ( idSincroValido( id ) && semaforosUsuario[ id ] != NULL ) {
+        semaforosUsuario[ id ]->V();
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int SemWait( Sem_t )
+ *
+ *  Los PC se avanzan antes del P porque el hilo se puede dormir ahi y
+ *  los registros se guardan en el cambio de contexto.
+ */
+void NachOS_SemWait() {		// System call 14
+    int id = machine->ReadRegister( 4 );
+    DEBUG( 'u', "SemWait(%d)\n", id );
+
+    if ( idSincroValido( id ) && semaforosUsuario[ id ] != NULL ) {
+        machine->WriteRegister( 2, 0 );
+        returnFromSystemCall();
+        semaforosUsuario[ id ]->P();
+    } else {
+        machine->WriteRegister( 2, -1 );
+        returnFromSystemCall();
+    }
+}
+
+
+/*
+ *  System call interface: Lock_t LockCreate( int )
+ */
+void NachOS_LockCreate() {		// System call 15
+    int id = buscarHueco( locksUsuario );
+    DEBUG( 'u', "LockCreate -> %d\n", id );
+
+    if ( id != -1 ) {
+        locksUsuario[ id ] = new Lock( "lock de usuario" );
+    }
+    machine->WriteRegister( 2, id );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int LockDestroy( Lock_t )
+ */
+void NachOS_LockDestroy() {		// System call 16
+    int id = machine->ReadRegister( 4 );
+
+    if ( idSincroValido( id ) && locksUsuario[ id ] != NULL ) {
+        delete locksUsuario[ id ];
+        locksUsuario[ id ] = NULL;
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int LockAcquire( Lock_t )
+ */
+void NachOS_LockAcquire() {		// System call 17
+    int id = machine->ReadRegister( 4 );
+
+    if ( idSincroValido( id ) && locksUsuario[ id ] != NULL ) {
+        machine->WriteRegister( 2, 0 );
+        returnFromSystemCall();
+        locksUsuario[ id ]->Acquire();		// se puede dormir
+    } else {
+        machine->WriteRegister( 2, -1 );
+        returnFromSystemCall();
+    }
+}
+
+
+/*
+ *  System call interface: int LockRelease( Lock_t )
+ */
+void NachOS_LockRelease() {		// System call 18
+    int id = machine->ReadRegister( 4 );
+
+    if ( idSincroValido( id ) && locksUsuario[ id ] != NULL
+         && locksUsuario[ id ]->isHeldByCurrentThread() ) {
+        locksUsuario[ id ]->Release();
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: Cond_t CondCreate( int )
+ */
+void NachOS_CondCreate() {		// System call 19
+    int id = buscarHueco( condicionesUsuario );
+    DEBUG( 'u', "CondCreate -> %d\n", id );
+
+    if ( id != -1 ) {
+        condicionesUsuario[ id ] = new Condition( "condicion de usuario" );
+    }
+    machine->WriteRegister( 2, id );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int CondDestroy( Cond_t )
+ */
+void NachOS_CondDestroy() {		// System call 20
+    int id = machine->ReadRegister( 4 );
+
+    if ( idSincroValido( id ) && condicionesUsuario[ id ] != NULL ) {
+        delete condicionesUsuario[ id ];
+        condicionesUsuario[ id ] = NULL;
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+// Las tres operaciones de condicion reciben (condicion, lock) en r4 y r5
+// y necesitan que el lock exista y lo tenga el hilo que llama
+static bool paresCondicionLock( int cond, int lock ) {
+    return idSincroValido( cond ) && condicionesUsuario[ cond ] != NULL
+        && idSincroValido( lock ) && locksUsuario[ lock ] != NULL
+        && locksUsuario[ lock ]->isHeldByCurrentThread();
+}
+
+
+/*
+ *  System call interface: int CondSignal( Cond_t, Lock_t )
+ */
+void NachOS_CondSignal() {		// System call 21
+    int cond = machine->ReadRegister( 4 );
+    int lock = machine->ReadRegister( 5 );
+
+    if ( paresCondicionLock( cond, lock ) ) {
+        condicionesUsuario[ cond ]->Signal( locksUsuario[ lock ] );
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int CondWait( Cond_t, Lock_t )
+ */
+void NachOS_CondWait() {		// System call 22
+    int cond = machine->ReadRegister( 4 );
+    int lock = machine->ReadRegister( 5 );
+
+    if ( paresCondicionLock( cond, lock ) ) {
+        machine->WriteRegister( 2, 0 );
+        returnFromSystemCall();
+        condicionesUsuario[ cond ]->Wait( locksUsuario[ lock ] );	// se duerme
+    } else {
+        machine->WriteRegister( 2, -1 );
+        returnFromSystemCall();
+    }
+}
+
+
+/*
+ *  System call interface: int CondBroadcast( Cond_t, Lock_t )
+ */
+void NachOS_CondBroadcast() {		// System call 23
+    int cond = machine->ReadRegister( 4 );
+    int lock = machine->ReadRegister( 5 );
+
+    if ( paresCondicionLock( cond, lock ) ) {
+        condicionesUsuario[ cond ]->Broadcast( locksUsuario[ lock ] );
+        machine->WriteRegister( 2, 0 );
+    } else {
+        machine->WriteRegister( 2, -1 );
+    }
+    returnFromSystemCall();
+}
+
+
+//----------------------------------------------------------------------
+// Sockets
+//	Son descriptores de Unix como cualquier archivo, por eso van en la
+//	misma tabla de recursos abiertos pero marcados como RECURSO_SOCKET.
+//	Con eso Read, Write y Close les sirven sin cambios.
+//----------------------------------------------------------------------
+
+/*
+ *  System call interface: Socket_t Socket( int, int )
+ *
+ *  r4 = familia (0 IPv4, 1 IPv6), r5 = tipo (0 stream, 1 datagrama)
+ */
+void NachOS_Socket() {			// System call 30
+    int familia = ( machine->ReadRegister( 4 ) == AF_INET6_NachOS ) ? AF_INET6 : AF_INET;
+    int tipo = ( machine->ReadRegister( 5 ) == SOCK_DGRAM_NachOS ) ? SOCK_DGRAM : SOCK_STREAM;
+    DEBUG( 'u', "Socket familia %d tipo %d\n", familia, tipo );
+
+    int descriptor = socket( familia, tipo, 0 );
+    if ( descriptor == -1 ) {
+        machine->WriteRegister( 2, -1 );
+    } else {
+        int id = currentThread->archivos->abrir( descriptor, RECURSO_SOCKET );
+        if ( id == -1 ) {
+            close( descriptor );
+        }
+        machine->WriteRegister( 2, id );
+    }
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Connect( Socket_t, char *, int )
+ *
+ *  r4 = id del socket, r5 = cadena con la IP (numerica), r6 = puerto
+ */
+void NachOS_Connect() {		// System call 31
+    int id = machine->ReadRegister( 4 );
+    char ip[ 64 ];
+    leerCadenaUsuario( machine->ReadRegister( 5 ), ip, sizeof( ip ) );
+    int puerto = machine->ReadRegister( 6 );
+    DEBUG( 'u', "Connect id %d a %s:%d\n", id, ip, puerto );
+
+    int resultado = -1;
+    if ( currentThread->archivos->esSocket( id ) ) {
+        int descriptor = currentThread->archivos->descriptorUnix( id );
+
+        // Se intenta IPv4 primero y si la direccion no parsea, IPv6
+        struct sockaddr_in direccion4;
+        struct sockaddr_in6 direccion6;
+        memset( &direccion4, 0, sizeof( direccion4 ) );
+        memset( &direccion6, 0, sizeof( direccion6 ) );
+
+        if ( inet_pton( AF_INET, ip, &direccion4.sin_addr ) == 1 ) {
+            direccion4.sin_family = AF_INET;
+            direccion4.sin_port = htons( puerto );
+            resultado = connect( descriptor, (struct sockaddr *) &direccion4, sizeof( direccion4 ) );
+        } else if ( inet_pton( AF_INET6, ip, &direccion6.sin6_addr ) == 1 ) {
+            direccion6.sin6_family = AF_INET6;
+            direccion6.sin6_port = htons( puerto );
+            resultado = connect( descriptor, (struct sockaddr *) &direccion6, sizeof( direccion6 ) );
+        }
+    }
+    machine->WriteRegister( 2, resultado );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Bind( Socket_t, int )
+ */
+void NachOS_Bind() {		// System call 32
+    int id = machine->ReadRegister( 4 );
+    int puerto = machine->ReadRegister( 5 );
+    int resultado = -1;
+
+    if ( currentThread->archivos->esSocket( id ) ) {
+        struct sockaddr_in direccion;
+        memset( &direccion, 0, sizeof( direccion ) );
+        direccion.sin_family = AF_INET;
+        direccion.sin_addr.s_addr = htonl( INADDR_ANY );
+        direccion.sin_port = htons( puerto );
+        resultado = bind( currentThread->archivos->descriptorUnix( id ),
+                          (struct sockaddr *) &direccion, sizeof( direccion ) );
+    }
+    machine->WriteRegister( 2, resultado );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Listen( Socket_t, int )
+ */
+void NachOS_Listen() {		// System call 33
+    int id = machine->ReadRegister( 4 );
+    int cola = machine->ReadRegister( 5 );
+    int resultado = -1;
+
+    if ( currentThread->archivos->esSocket( id ) ) {
+        resultado = listen( currentThread->archivos->descriptorUnix( id ), cola );
+    }
+    machine->WriteRegister( 2, resultado );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Accept( Socket_t )
+ *
+ *  Devuelve un id nuevo en la tabla para la conexion aceptada
+ */
+void NachOS_Accept() {		// System call 34
+    int id = machine->ReadRegister( 4 );
+    int resultado = -1;
+
+    if ( currentThread->archivos->esSocket( id ) ) {
+        int nuevo = accept( currentThread->archivos->descriptorUnix( id ), NULL, NULL );
+        if ( nuevo != -1 ) {
+            resultado = currentThread->archivos->abrir( nuevo, RECURSO_SOCKET );
+            if ( resultado == -1 ) {
+                close( nuevo );
+            }
+        }
+    }
+    machine->WriteRegister( 2, resultado );
+    returnFromSystemCall();
+}
+
+
+/*
+ *  System call interface: int Shutdown( Socket_t, int )
+ *
+ *  modo: 0 cierra lectura, 1 escritura, 2 ambas (igual que Unix)
+ */
+void NachOS_Shutdown() {	// System call 35
+    int id = machine->ReadRegister( 4 );
+    int modo = machine->ReadRegister( 5 );
+    int resultado = -1;
+
+    if ( currentThread->archivos->esSocket( id ) ) {
+        resultado = shutdown( currentThread->archivos->descriptorUnix( id ), modo );
+    }
+    machine->WriteRegister( 2, resultado );
+    returnFromSystemCall();
+}
+
+
+//----------------------------------------------------------------------
+// matarProceso
+//	Una excepcion del programa de usuario (acceso invalido, division
+//	entre cero, etc.) antes tumbaba todo NachOS con un ASSERT.  Ahora
+//	se avisa y se termina solo ese hilo como si hubiera hecho Exit(-1),
+//	devolviendo su memoria; los demas procesos siguen.
+//----------------------------------------------------------------------
+
+static void matarProceso( const char * motivo, ExceptionType which ) {
+    printf( "Proceso \"%s\": %s (excepcion %d, PC %d). Se termina.\n",
+            currentThread->getName(), motivo, which,
+            machine->ReadRegister( PCReg ) );
+    fflush( stdout );
+    terminarHiloActual( -1 );
+}
+
 
 void
 ExceptionHandler(ExceptionType which)
 {
     int type = machine->ReadRegister(2) - SC_Base;
+
+    // Los programas ".lab" que da el curso para el proyecto 3 se compilaron
+    // con un start.s que no suma SC_Base: traen el numero crudo en r2.  Si
+    // restando la base no queda un llamado valido pero el crudo si lo es,
+    // se acepta el crudo.
+    if ( which == SyscallException && ( type < 0 || type > SC_Shutdown ) ) {
+        int crudo = machine->ReadRegister( 2 );
+        if ( crudo >= 0 && crudo <= SC_Shutdown ) {
+            type = crudo;
+        }
+    }
 
     switch ( which ) {
 
@@ -817,37 +1035,34 @@ ExceptionHandler(ExceptionType which)
           break;
 
        case PageFaultException:
-          stats->numPageFaults++;
-          printf("Page fault at address %d\n",
-                 machine->ReadRegister(BadVAddrReg));
-          interrupt->Halt();
+#ifdef VM
+          // Con TLB esto llega en cada miss: la pagina puede estar en
+          // memoria (solo hay que meterla al TLB) o haber que traerla
+          stats->numPageFaultExceptions++;
+          if ( !currentThread->space->atenderFallo( machine->ReadRegister( BadVAddrReg ) ) ) {
+              matarProceso( "fallo de pagina sin solucion (direccion invalida o SWAP lleno)", which );
+          }
+#else
+          // Sin memoria virtual todas las paginas estan cargadas, esto no
+          // deberia pasar; se trata igual que un acceso invalido
+          matarProceso( "fallo de pagina", which );
+#endif
           break;
-
        case ReadOnlyException:
-          printf( "Read Only exception (%d)\n", which );
-          ASSERT( false );
+          matarProceso( "escritura en pagina de solo lectura", which );
           break;
-
        case BusErrorException:
-          printf( "Bus error exception (%d)\n", which );
-          ASSERT( false );
+          matarProceso( "error de bus (direccion mal alineada)", which );
           break;
-
        case AddressErrorException:
-          printf( "Address error exception (%d)\n", which );
-          ASSERT( false );
+          matarProceso( "direccion fuera del espacio del proceso", which );
           break;
-
        case OverflowException:
-          printf( "Overflow exception (%d)\n", which );
-          ASSERT( false );
+          matarProceso( "desbordamiento aritmetico", which );
           break;
-
        case IllegalInstrException:
-          printf( "Ilegal instruction exception (%d)\n", which );
-          ASSERT( false );
+          matarProceso( "instruccion ilegal", which );
           break;
-
        default:
           printf( "Unexpected exception %d\n", which );
           ASSERT( false );

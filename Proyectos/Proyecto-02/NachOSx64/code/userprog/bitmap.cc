@@ -33,7 +33,7 @@ BitMap::BitMap(int nitems)
 
 BitMap::~BitMap()
 { 
-    delete map;
+    delete [] map;	// era "delete map", valgrind lo acusaba (new[] con delete)
 }
 
 //----------------------------------------------------------------------

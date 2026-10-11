@@ -81,9 +81,9 @@ class Lock {
 
   private:
     char* name;				// for debugging
-    Semaphore* semaphore;
-    Thread* holder;
-    // plus some other stuff you'll need to define
+    bool ocupado;			// true mientras algun hilo tenga el lock
+    Thread* duenno;			// hilo que hizo el Acquire, NULL si esta libre
+    List<Thread*>* colaEspera;		// hilos dormidos esperando a que se libere
 };
 
 // The following class defines a "condition variable".  A condition
@@ -135,8 +135,7 @@ class Condition {
 
   private:
     char* name;
-    List<Thread*>* queue;
-    // plus some other stuff you'll need to define
+    List<Thread*>* colaEspera;		// hilos dormidos en Wait hasta que alguien haga Signal
 };
 
 
@@ -150,7 +149,7 @@ class Mutex {
       void Unlock();
    private:
       char * name;
-      Semaphore* semaphore; 
+      Semaphore * turno;		// semaforo binario que hace todo el trabajo
 };
 
 
@@ -162,10 +161,12 @@ class Barrier {
       ~Barrier();
       void Wait();
    private:
-      char* name;
-      int count;            // cuántos hilos deben llegar
-      int waiting;          // cuántos han llegado
-      Semaphore* semaphore;
+      char * name;
+      int cupo;				// cuantos hilos tienen que llegar para abrir
+      int llegados;			// cuantos van esperando en esta ronda
+      int ronda;			// se incrementa cada vez que se abre la barrera
+      Lock * candado;			// protege los contadores
+      Condition * todosLlegaron;	// aqui duermen los que llegan antes
 };
 
 #endif // SYNCH_H

@@ -83,7 +83,7 @@ void MonitorProcess ( int childPid, unsigned long timeSliceLength )
     instructionCounter++;
     
     // From time to time, insert machine code to force a context switch
-    if ( timeSliceLength > 0 && instructionCounter % timeSliceLength == 0 )
+    if ( instructionCounter % timeSliceLength == 0 )
     {
       // Get child value of 'inContextSwitch'
       long incs = ptrace ( PTRACE_PEEKDATA, childPid, (long)&inContextSwitch, NULL );

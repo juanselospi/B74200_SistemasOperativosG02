@@ -18,7 +18,20 @@
 
 DiningPh * dp;
 
-Agua * water;
+//----------------------------------------------------------------------
+// Pausa
+//	Reemplaza los sleep() que traia el ejemplo.  sleep() duerme el
+//	proceso entero de NachOS, no solo al hilo, asi que no servia para
+//	probar concurrencia y ademas hacia la corrida eterna.  Ceder el CPU
+//	varias veces si deja que los otros hilos se metan en medio.
+//----------------------------------------------------------------------
+
+static void Pausa( int veces ) {
+    for ( int i = 0; i < veces; i++ ) {
+        currentThread->Yield();
+    }
+}
+
 
 void Philo( void * p ) {
 
@@ -34,15 +47,82 @@ void Philo( void * p ) {
         dp->pickup( who );
         dp->print();
         eats = Random() % 6;
-
-        currentThread->Yield();
-        sleep( eats );
+        Pausa( eats );
 
         dp->putdown( who );
 
         thinks = Random() % 6;
-        currentThread->Yield();
-        sleep( thinks );
+        Pausa( thinks );
+    }
+
+    printf(" Philosopher %ld is done\n", who + 1);
+
+}
+
+
+//----------------------------------------------------------------------
+// PruebaFilosofos
+//	Lanza los 5 filosofos sobre la misma mesa.  El hilo main no come,
+//	solo los crea; cuando termina ThreadTest, main hace Finish y los
+//	demas siguen corriendo hasta acabar.
+//----------------------------------------------------------------------
+
+void PruebaFilosofos() {
+
+    dp = new DiningPh();
+
+    for ( long k = 0; k < 5; k++ ) {
+        Thread * Ph = new Thread( "filosofo" );
+        Ph->Fork( Philo, (void *) k );
+    }
+
+}
+
+
+//----------------------------------------------------------------------
+// Problema del agua
+//	10 hidrogenos y 5 oxigenos llegan en orden revuelto y con una
+//	pausa aleatoria antes de llegar, para que no entren siempre en el
+//	mismo orden.  Deben salir exactamente 5 moleculas de 2 H y 1 O.
+//----------------------------------------------------------------------
+
+FormadorAgua * agua;
+
+void Hidrogeno( void * p ) {
+    long id = (long) p;
+    Pausa( Random() % 8 );
+    printf( " H%ld llega\n", id );
+    agua->llegaHidrogeno( id );
+    printf( " H%ld se fue enlazado\n", id );
+}
+
+
+void Oxigeno( void * p ) {
+    long id = (long) p;
+    Pausa( Random() % 8 );
+    printf( " O%ld llega\n", id );
+    agua->llegaOxigeno( id );
+    printf( " O%ld se fue enlazado\n", id );
+}
+
+
+void PruebaAgua() {
+
+    agua = new FormadorAgua();
+
+    // 'H' u 'O' segun lo que se crea en cada posicion: 10 H y 5 O revueltos
+    const char * orden = "HHOHOHHHOOHHOHH";
+    long numH = 0, numO = 0;
+
+    for ( int i = 0; orden[ i ] != 0; i++ ) {
+        Thread * t;
+        if ( orden[ i ] == 'H' ) {
+            t = new Thread( "hidrogeno" );
+            t->Fork( Hidrogeno, (void *) numH++ );
+        } else {
+            t = new Thread( "oxigeno" );
+            t->Fork( Oxigeno, (void *) numO++ );
+        }
     }
 
 }
@@ -78,81 +158,25 @@ SimpleThread(void* name)
 }
 
 
-// hilo para H idrogeno
-void HThread(void *arg) {
-
-    water->H( (long)arg );
-}
-
-// hilo para O xigeno
-void OThread(void *arg) {
-
-    water->O( (long)arg );
-}
-
 
 //----------------------------------------------------------------------
 // ThreadTest
-// 	Set up a ping-pong between several threads, by launching
-//	ten threads which call SimpleThread, and finally calling 
-//	SimpleThread ourselves.
+//	Elige que prueba correr.  Las dos pueden correr a la vez porque
+//	cada una usa su propio monitor; solo se mezclan las impresiones.
 //----------------------------------------------------------------------
+
+enum { SOLO_FILOSOFOS = 1, SOLO_AGUA = 2, AMBAS = 3 };
+static const int PRUEBA_A_CORRER = AMBAS;
 
 void
 ThreadTest()
 {
-    Thread * Ph;
+    DEBUG('t', "Entering ThreadTest");
 
-    // DEBUG('t', "Entering SimpleTest");   
-
-    DEBUG('t', "Entering AguaTest");
-
-/*
-    dp = new DiningPh();
-
-    for ( long k = 0; k < 5; k++ ) {
-        Ph = new Thread( "dp" );
-        Ph->Fork( Philo, (void *) k );
+    if ( PRUEBA_A_CORRER & SOLO_FILOSOFOS ) {
+        PruebaFilosofos();
     }
-
-    return;
-*/
-
-
-/*
-    for ( int k=1; k<5; k++) {
-      char* threadname = new char[100];
-      sprintf(threadname, "Hilo %d", k);
-      Thread* newThread = new Thread (threadname);
-      newThread->Fork (SimpleThread, (void*)threadname);
+    if ( PRUEBA_A_CORRER & SOLO_AGUA ) {
+        PruebaAgua();
     }
-    
-    SimpleThread( (void*)"Hilo 0");
-*/
-
-
-
-    water = new Agua();
-
-    // creo hilos de H idrogeno
-    for (long i = 0; i < 10; i++) {
-
-        Thread *t = new Thread( "H" );
-
-        t->Fork( HThread, (void*)i );
-    }
-
-    // creo hilos de O xigeno
-    for (long i = 0; i < 5; i++) {
-
-        Thread *t = new Thread( "O" );
-
-        t->Fork( OThread, (void*)i );
-    }
-
-
 }
-
-
-
-

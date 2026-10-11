@@ -9,17 +9,6 @@
 #include "system.h"
 #include "preemptive.h"
 
-#ifdef USER_PROGRAM
-#include "bitmap.h"
-#include "synch.h"
-#include "addrspace.h"
-#ifdef VM
-#include "coremap.h"
-#include "swap.h"
-#include "lru.h"
-#endif
-#endif
-
 // This defines *all* of the global data structures used by Nachos.
 // These are all initialized and de-allocated by this file.
 
@@ -45,10 +34,7 @@ SynchDisk   *synchDisk;
 
 #ifdef USER_PROGRAM	// requires either FILESYS or FILESYS_STUB
 Machine *machine;	// user program memory and registers
-
-BitMap * freePhysPages = NULL;
-Lock * physPageLock = NULL;
-int * frameRefCount = NULL;
+TablaProcesos *tablaProcesos;
 #endif
 
 #ifdef NETWORK
@@ -110,6 +96,7 @@ Initialize(int argc, char **argv)
     
 #ifdef USER_PROGRAM
     bool debugUserProg = false;	// single step user program
+    bool ocuparPares = false;	// -o: marcar los marcos pares como ocupados
 #endif
 #ifdef FILESYS_NEEDED
     bool format = false;	// format disk
@@ -137,22 +124,19 @@ Initialize(int argc, char **argv)
 	}
 	// 2007, Jose Miguel Santos Espino
 	else if (!strcmp(*argv, "-p")) {
+	    preemptiveScheduling = true;
 	    if (argc == 1) {
-	        preemptiveScheduling = true;
 	        timeSlice = DEFAULT_TIME_SLICE;
 	    } else {
-	        char *end;
-	        long long slice = strtoll(*(argv + 1), &end, 10);
-	        if (*end == '\0' && end != *(argv + 1)) {
-	            preemptiveScheduling = true;
-	            timeSlice = slice;
-	            argCount = 2;
-	        }
+	        timeSlice = atoi(*(argv+1));
+	        argCount = 2;
 	    }
 	}
 #ifdef USER_PROGRAM
 	if (!strcmp(*argv, "-s"))
 	    debugUserProg = true;
+	if (!strcmp(*argv, "-o"))
+	    ocuparPares = true;
 #endif
 #ifdef FILESYS_NEEDED
 	if (!strcmp(*argv, "-f"))
@@ -198,26 +182,12 @@ Initialize(int argc, char **argv)
     
 #ifdef USER_PROGRAM
     machine = new Machine(debugUserProg);	// this must come first
-
-	freePhysPages = new BitMap(NumPhysPages);
-    physPageLock = new Lock("phys page lock");
-    frameRefCount = new int[NumPhysPages];
-
-    for(int i = 0; i < NumPhysPages; i++) {
-
-        frameRefCount[i] = 0;
+    if ( ocuparPares ) {
+        machine->ocuparMarcosPares();
     }
-
-#ifndef VM
-    // No reservar marcos de prueba en VM nintendo switch 2 amazon precio
-    AddrSpace::ReserveTestPhysPages();
-#endif
-
+    tablaProcesos = new TablaProcesos();
 #ifdef VM
-    CoreMapInit();
-    swapManager = new SwapManager();
-    frameLRU = new LRUManager(NumPhysPages);
-    tlbLRU = new LRUManager(TLBSize);
+    AddrSpace::iniciarMemoriaVirtual();
 #endif
 #endif
 
@@ -252,18 +222,12 @@ Cleanup()
 #endif
     
 #ifdef USER_PROGRAM
+    // Con -d a se ve si algun proceso dejo marcos sin devolver
+    DEBUG('a', "Al salir quedan %d marcos libres de %d\n", machine->marcosLibres(), NumPhysPages);
+    delete tablaProcesos;
 #ifdef VM
-    delete tlbLRU;
-    delete frameLRU;
-    delete swapManager;
-    CoreMapDone();
-#else
-	AddrSpace::ReleaseTestPhysPages();
+    AddrSpace::terminarMemoriaVirtual();
 #endif
-	delete[] frameRefCount;
-	delete physPageLock;
-	delete freePhysPages;
-
     delete machine;
 #endif
 

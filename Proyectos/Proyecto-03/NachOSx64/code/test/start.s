@@ -231,17 +231,17 @@ CondDestroy:
 	j	$31
 	.end CondDestroy
 
-	.globl CondSignal
-	.ent	CondSignal
+	.globl CondAcquire
+	.ent	CondAcquire
 CondSignal:
 	addiu $2,$0,SC_CondSignal
 	addiu $2,$2,SC_Base
 	syscall
 	j	$31
-	.end CondSignal
+	.end CondAcquire
 
-	.globl CondWait
-	.ent	CondWait
+	.globl CondSignal
+	.ent	CondSignal
 CondWait:
 	addiu $2,$0,SC_CondWait
 	addiu $2,$2,SC_Base
@@ -251,7 +251,7 @@ CondWait:
 
 	.globl CondBroadcast
 	.ent	CondBroadcast
-CondBroadcast:
+CondBroadCast:
 	addiu $2,$0,SC_CondBroadcast
 	addiu $2,$2,SC_Base
 	syscall
